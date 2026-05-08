@@ -1,0 +1,73 @@
+{
+  "project": {
+    "name": "集团HCRM生产环境",
+    "environment": "PROD",
+    "crm_version": "Dynamics 365",
+    "last_updated": "2026-04-24"
+  },
+  "summary": {
+    "total_servers": 134,
+    "db_servers": 4,
+    "sql_archive_servers": 2,
+    "crm_app_servers": 28,
+    "hcrm_old_app_servers": 6,
+    "crm_front_servers": 2,
+    "app_servers": 5,
+    "portal_servers": 4,
+    "webapi_servers": 5,
+    "mq_servers": 4,
+    "job_servers": 3,
+    "ad_servers": 2,
+    "adfs_servers": 2,
+    "ng_reverse_proxy_servers": 2,
+    "mysql_servers": 3,
+    "redis_servers": 1
+  },
+  "topology": {
+    "reverse_proxy": {
+      "enabled": true,
+      "servers": [
+        "jthcrmprdng01",
+        "jthcrmprdng02"
+      ]
+    },
+    "crm_app_layer": {
+      "servers_count": 28,
+      "subnets": [
+        "10.19.66.x",
+        "10.19.68.x",
+        "10.19.98.x"
+      ]
+    },
+    "portal_layer": {
+      "servers": [
+        "jthcrmprdpt01",
+        "jthcrmprdpt02",
+        "jthcrmprdpt03",
+        "jthcrmprdpt04"
+      ]
+    },
+    "db_layer": {
+      "servers": [
+        "jthcrmprddb01",
+        "jthcrmprddb02",
+        "jthcrmprddb03",
+        "jthcrmprddb04"
+      ],
+      "subnet": "10.19.33.x"
+    },
+    "archive_db": {
+      "servers": [
+        "hcrmprodssdb1",
+        "hcrmprodssdb2"
+      ],
+      "subnet": "10.19.104.x"
+    }
+  },
+  "known_risks": [
+    "4 SQL Server DB 节点，AlwaysOn 配置状态需确认",
+    "41 台服务器未标注类型，需补充完善",
+    "134 台服务器，运维复杂度高",
+    "可能存在 AuditBase / POA 表膨胀风险"
+  ]
+}

@@ -1,0 +1,159 @@
+{
+  "project": {
+    "name": "Dynamics Production",
+    "customer": "客户名称（请修改）",
+    "environment": "PROD",
+    "crm_version": "Dynamics 365 9.x",
+    "crm_build": "",
+    "last_updated": "2026-04-30",
+    "last_inspected": ""
+  },
+  "summary": {
+    "sql_servers": 2,
+    "app_servers": 2,
+    "portal_servers": 0,
+    "async_servers": 1,
+    "mq_servers": 0,
+    "ad_servers": 2,
+    "adfs_servers": 1,
+    "total_servers": 8,
+    "alwayson_enabled": true,
+    "load_balancer_enabled": true
+  },
+  "servers": [
+    {
+      "name": "SQL01",
+      "role": ["SQL", "Primary"],
+      "ip": "10.1.1.10",
+      "os": "Windows Server 2019",
+      "cpu_cores": 16,
+      "memory_gb": 64,
+      "disk": [
+        {"drive": "C", "size_gb": 100, "type": "SSD", "usage": "OS"},
+        {"drive": "D", "size_gb": 500, "type": "SSD", "usage": "Data"},
+        {"drive": "L", "size_gb": 200, "type": "SSD", "usage": "Log"},
+        {"drive": "T", "size_gb": 100, "type": "SSD", "usage": "TempDB"}
+      ],
+      "sql_version": "SQL Server 2019",
+      "sql_edition": "Enterprise",
+      "sql_build": "",
+      "instance": "MSSQLSERVER",
+      "max_server_memory_gb": 56,
+      "tempdb_files": 8,
+      "tags": ["critical", "primary"]
+    },
+    {
+      "name": "SQL02",
+      "role": ["SQL", "Secondary"],
+      "ip": "10.1.1.11",
+      "os": "Windows Server 2019",
+      "cpu_cores": 16,
+      "memory_gb": 64,
+      "sql_version": "SQL Server 2019",
+      "sql_edition": "Enterprise",
+      "instance": "MSSQLSERVER",
+      "max_server_memory_gb": 56,
+      "tags": ["secondary"]
+    },
+    {
+      "name": "APP01",
+      "role": ["IIS", "CRM Frontend"],
+      "ip": "10.1.1.20",
+      "os": "Windows Server 2019",
+      "cpu_cores": 8,
+      "memory_gb": 32,
+      "iis_version": "10.0",
+      "crm_website": true,
+      "app_pool_name": "CRMAppPool",
+      "tags": ["critical"]
+    },
+    {
+      "name": "APP02",
+      "role": ["IIS", "CRM Frontend"],
+      "ip": "10.1.1.21",
+      "os": "Windows Server 2019",
+      "cpu_cores": 8,
+      "memory_gb": 32,
+      "iis_version": "10.0",
+      "crm_website": true,
+      "app_pool_name": "CRMAppPool",
+      "tags": []
+    },
+    {
+      "name": "ASYNC01",
+      "role": ["AsyncService"],
+      "ip": "10.1.1.30",
+      "os": "Windows Server 2019",
+      "cpu_cores": 8,
+      "memory_gb": 16,
+      "tags": ["single-point-of-failure"]
+    }
+  ],
+  "topology": {
+    "load_balancer": {
+      "enabled": true,
+      "type": "NLB",
+      "vip": "",
+      "targets": ["APP01", "APP02"]
+    },
+    "sql_alwayson": {
+      "enabled": true,
+      "listener": "",
+      "primary": "SQL01",
+      "secondary": ["SQL02"],
+      "sync_mode": "Synchronous",
+      "auto_failover": true,
+      "databases": ["MSCRM", "MSCRM_CONFIG"]
+    },
+    "dependencies": [
+      {"from": "APP01", "to": "SQL01", "type": "SQL", "port": 1433},
+      {"from": "APP02", "to": "SQL01", "type": "SQL", "port": 1433},
+      {"from": "ASYNC01", "to": "SQL01", "type": "SQL", "port": 1433}
+    ]
+  },
+  "d365_config": {
+    "crm_database": "MSCRM",
+    "config_database": "MSCRM_CONFIG",
+    "organization_count": 1,
+    "organization_name": "",
+    "plugin_profiler_enabled": false,
+    "audit_enabled": true,
+    "rcsi_enabled": true,
+    "sandbox_mode": "LocalMachine",
+    "service_account": ""
+  },
+  "known_risks": [
+    {
+      "id": "RISK-001",
+      "description": "AuditBase 历史数据持续增长，无归档策略",
+      "severity": "P2",
+      "first_seen": "2026-04-30",
+      "status": "open"
+    },
+    {
+      "id": "RISK-002",
+      "description": "PrincipalObjectAccess 表数据量大，影响权限查询性能",
+      "severity": "P2",
+      "first_seen": "2026-04-30",
+      "status": "open"
+    },
+    {
+      "id": "RISK-003",
+      "description": "ASYNC01 为单点服务器，无冗余，故障将导致所有异步任务停止",
+      "severity": "P2",
+      "first_seen": "2026-04-30",
+      "status": "open"
+    }
+  ],
+  "performance_baseline": {
+    "last_updated": "",
+    "sql_ple_normal": 0,
+    "sql_ple_warning": 300,
+    "sql_cpu_avg_pct": 0,
+    "sql_io_read_avg_ms": 0,
+    "sql_io_write_avg_ms": 0,
+    "iis_avg_response_ms": 0,
+    "iis_p95_response_ms": 0
+  },
+  "inspection_history": []
+}

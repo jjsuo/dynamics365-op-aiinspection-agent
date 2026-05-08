@@ -1,0 +1,6 @@
+hostname,ip,role,cpu_cores,memory_gb,os,sql_version,tags
+SQL01,10.1.1.10,SQL-Primary,16,64,Windows Server 2019,SQL Server 2019,critical
+SQL02,10.1.1.11,SQL-Secondary,16,64,Windows Server 2019,SQL Server 2019,secondary
+APP01,10.1.1.20,IIS-CRM,8,32,Windows Server 2019,,critical
+APP02,10.1.1.21,IIS-CRM,8,32,Windows Server 2019,,
+ASYNC01,10.1.1.30,AsyncService,8,16,Windows Server 2019,,single-point

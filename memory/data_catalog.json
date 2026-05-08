@@ -1,0 +1,50 @@
+{
+  "_description": "数据目录索引 - Agent 启动时自动扫描生成，记录各类型数据的可用日期范围。所有 category 在同一 DATA_ROOT 下，通过 tools/data_reader.py --list-categories / --list-dates 维护。",
+  "_data_root": "<project_root>/data (可由 $DATA_ROOT 或 --data-root 覆盖)",
+  "_last_scanned": "",
+  "categories": {
+    "sql_blocking": {
+      "relative_path": "sql_blocking",
+      "available_dates": [],
+      "latest_date": "",
+      "oldest_date": "",
+      "total_days": 0
+    },
+    "slow_sql": {
+      "relative_path": "slow_sql",
+      "available_dates": [],
+      "latest_date": "",
+      "oldest_date": "",
+      "total_days": 0
+    },
+    "sql_index": {
+      "relative_path": "sql_index",
+      "available_dates": [],
+      "latest_date": "",
+      "oldest_date": "",
+      "total_days": 0,
+      "has_index_existing": false
+    },
+    "server_per_sql": {
+      "relative_path": "server_per_sql",
+      "available_dates": [],
+      "latest_date": "",
+      "oldest_date": "",
+      "total_days": 0
+    },
+    "iis_logs": {
+      "relative_path": "iis_logs",
+      "available_dates": [],
+      "latest_date": "",
+      "oldest_date": "",
+      "total_days": 0
+    },
+    "windows_health": {
+      "relative_path": "windows_health",
+      "available_dates": [],
+      "latest_date": "",
+      "oldest_date": "",
+      "total_days": 0
+    }
+  }
+}

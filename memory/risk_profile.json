@@ -1,0 +1,32 @@
+{
+  "_description": "系统风险画像 - 跨巡检周期的风险追踪",
+  "_last_updated": "",
+  "active_risks": [],
+  "resolved_risks": [],
+  "risk_trends": {
+    "sql_block_frequency": "unknown",
+    "table_growth_rate": "unknown",
+    "index_health_trend": "unknown",
+    "iis_stability": "unknown"
+  },
+  "watch_list": [
+    {
+      "table": "AsyncOperationBase",
+      "current_rows": 0,
+      "warning_threshold": 5000000,
+      "last_checked": ""
+    },
+    {
+      "table": "AuditBase",
+      "current_rows": 0,
+      "warning_threshold": 10000000,
+      "last_checked": ""
+    },
+    {
+      "table": "PrincipalObjectAccess",
+      "current_rows": 0,
+      "warning_threshold": 20000000,
+      "last_checked": ""
+    }
+  ]
+}

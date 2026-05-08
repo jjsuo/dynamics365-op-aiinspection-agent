@@ -1,0 +1,32 @@
+# ===== 数据目录（含真实客户数据，禁止入库） =====
+data/
+
+# ===== 敏感环境信息（按需决定是否入库；默认忽略） =====
+# memory/environment.json
+# memory/servers.csv
+
+# ===== Windows 下载产生的备用数据流文件 =====
+*Zone.Identifier
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== 日志 / 临时文件 =====
+*.log
+*.tmp
+*.bak
