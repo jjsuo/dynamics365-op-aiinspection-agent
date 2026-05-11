@@ -20,13 +20,23 @@ IIS + Dynamics 365 应用层健康分析专家。
 ## 数据来源
 
 ### 模式 A：用户上传文件
-- iis_access_*.log（W3C 格式 IIS 日志）
-- iis_summary.csv（汇总采集数据）
-- app_pool_events.csv（应用池事件）
+- `u_exYYMMDD*.log`（W3C 格式 IIS 访问日志）
+- `apppool_status.csv`（应用池运行快照）
+- `iis_worker_processes.csv`（w3wp.exe 工作进程资源快照）
+- 老格式兼容：`iis_access_*.log` / `iis_summary.csv` / `app_pool_events.csv`
 
 ### 模式 B：本地目录自动读取
 默认路径：`<DATA_ROOT>/iis_logs/YYYY-MM-DD/`
 （DATA_ROOT 默认 `<项目根>/data`，可用 `--data-root` 或 `$DATA_ROOT` 覆盖）
+
+新采集脚本（`ServerCollectionScript/05_IIS日志采集.md`）产出格式：
+```
+<DATA_ROOT>/iis_logs/YYYY-MM-DD/
+├── u_exYYMMDD_W3SVC1.log         ← W3C 日志（按站点编号分文件）
+├── u_exYYMMDD_W3SVC2.log
+├── apppool_status.csv            ← 应用池快照
+└── iis_worker_processes.csv      ← 工作进程 CPU/内存快照
+```
 
 调用统一数据读取工具（只读取，不分析，自动解析 CSV 与 W3C .log 两种格式）：
 ```bash
@@ -37,9 +47,11 @@ python3 tools/data_reader.py --category iis_logs --list-dates
 ```
 
 返回的 `files` 中每条记录包含 `kind: csv | w3c_log`；本 Skill 按文件名关键字识别类型：
-- `iis_access_*` / `*.log`     → 访问日志
-- `iis_summary*`               → 汇总指标
-- `app_pool*`                  → 应用池事件
+- `u_ex*.log` / `iis_access_*` / `*.log`     → W3C 访问日志（主数据）
+- `apppool_status*`                           → ★ 应用池运行状态快照（新）
+- `iis_worker*` / `w3wp*`                     → ★ 工作进程资源快照（新）
+- `iis_summary*`                              → 汇总指标（老格式）
+- `app_pool*` / `app_pool_events*`            → 应用池事件（老格式）
 
 **数据读取后由本 Skill / AI 负责全部分析逻辑。**
 
@@ -73,14 +85,21 @@ python3 tools/data_reader.py --category iis_logs --list-dates
 | 503 任意 | 服务不可用 | 立即检查应用池状态 |
 | 504 任意 | 网关超时 | 检查 SQL 响应是否超时 |
 
-### 4. 应用池健康
+### 4. 应用池健康（`apppool_status.csv` / `iis_worker_processes.csv`）
+
+**apppool_status.csv 关键字段**（实际以 columns 为准，常见）：
+- Name（应用池名） / State / AutoStart / ManagedRuntimeVersion / StartMode
+- CpuLimit / IdleTimeout / RapidFailProtection / RecyclingRequests / RecyclingTime
+
+**iis_worker_processes.csv 关键字段**：
+- AppPoolName / ProcessId / CPU_Pct / WorkingSet_MB / PrivateMemory_MB / ThreadCount / HandleCount / StartTime
 
 检查项：
-- 应用池状态（Running / Stopped / Starting）
-- 应用池崩溃次数（24小时内 > 0 为异常）
-- 工作进程内存使用（> 1.5GB 建议回收）
-- 工作进程 CPU 使用（> 80% 需关注）
+- 应用池状态（Running / Stopped / Starting）—— 非 Running 直接 P1
+- 工作进程内存使用（WorkingSet_MB > 1500 建议回收）
+- 工作进程 CPU 使用（CPU_Pct > 80% 需关注）
 - 应用池回收频率（过于频繁说明内存泄漏）
+- StartTime 太新 → 最近重启过，可能是崩溃或手动回收
 
 ### 5. D365 特定检查
 
@@ -118,6 +137,8 @@ python3 tools/data_reader.py --category iis_logs --list-dates
 - IIS 响应慢高峰时段 ↔ SQL 阻塞高峰时段
 - IIS 503 错误 ↔ 应用池内存耗尽时段
 - IIS 504 超时 ↔ SQL 慢查询时段
+- ★ W3C 日志的 `time` 字段可以按 5 分钟聚合，和 `perfmon_5min_*.csv` / `slowsql_5min_*.csv` 的 `BucketStart` 对齐：
+  - 例：将 W3C 日志按 `FLOOR(time_in_minutes / 5) * 5` 归桶，即可与 SQL 侧数据 JOIN。
 
 ---
 

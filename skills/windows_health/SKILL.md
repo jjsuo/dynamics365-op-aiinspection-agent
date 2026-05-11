@@ -28,11 +28,23 @@ Windows Server + Dynamics 365 基础设施健康检查专家。
 默认路径：`<DATA_ROOT>/windows_health/YYYY-MM-DD/`
 （DATA_ROOT 默认 `<项目根>/data`，可用 `--data-root` 或 `$DATA_ROOT` 覆盖）
 
+新采集脚本（`ServerCollectionScript/06_Windows健康采集.md`）产出格式（★ 6 个 CSV）：
 ```
-├── event_log_system.csv      （系统事件日志）
-├── event_log_application.csv  （应用程序事件日志）
-├── service_status.csv         （服务状态）
-└── windows_perf_summary.csv   （系统资源摘要）
+<DATA_ROOT>/windows_health/YYYY-MM-DD/
+├── event_logs.csv          ← 事件日志（System + Application + D365 相关源，合并）
+├── services.csv            ← 服务状态（所有 Automatic 启动的服务）
+├── disks.csv               ← 磁盘空间
+├── hotfixes.csv            ← 补丁历史
+├── system_info.csv         ← 系统信息快照（内存/CPU/系统版本）
+└── logon_sessions.csv      ← 登录会话（quser）
+```
+
+老格式（兼容，若存在仍支持）：
+```
+├── event_log_system.csv         （系统事件日志）
+├── event_log_application.csv    （应用程序事件日志）
+├── service_status.csv           （服务状态）
+└── windows_perf_summary.csv     （系统资源摘要）
 ```
 
 调用统一数据读取工具（只读取，不分析）：
@@ -44,13 +56,46 @@ python3 tools/data_reader.py --category windows_health --list-dates
 ```
 
 本 Skill 按文件名关键字识别类型：
+
+**新格式（优先）**：
+- `event_logs*`             → ★ 事件日志（合并后的 System+Application）
+- `services*` 且非 service_status → ★ 服务状态快照（Automatic 服务）
+- `disks*`                  → ★ 磁盘空间
+- `hotfixes*`               → ★ 补丁历史
+- `system_info*`            → ★ 系统信息快照
+- `logon_sessions*`         → ★ 登录会话
+
+**老格式（兼容）**：
 - `event_log_system*`       → 系统事件
 - `event_log_application*`  → 应用程序事件
 - `service_status*`         → 服务状态
 - `windows_perf*` / `perf_summary*` → 资源摘要
-- `disk*`                   → 磁盘空间
+
+多服务器归档：`event_logs.csv` 中有 `MachineName` / `Server` 字段，本 Skill 按此字段分组分析。
 
 **数据读取后由本 Skill / AI 负责全部分析逻辑。**
+
+---
+
+## 新格式 CSV 关键字段（优先）
+
+### event_logs.csv
+常见列：`MachineName / LogName (System|Application) / TimeCreated / Id (EventID) / LevelDisplayName / ProviderName / Message`；按 `Id` 匹配下面的 EventID 规则库。
+
+### services.csv
+常见列：`Name / DisplayName / Status / StartType / DelayedAutoStart`；重点检查 D365 关键服务是否 `Status=Running`。
+
+### disks.csv
+常见列：`DeviceID / Name / VolumeName / Size_GB / Free_GB / Free_Pct`；对照下文磁盘空间阈值判断。
+
+### hotfixes.csv
+常见列：`HotFixID / Description / InstalledOn / InstalledBy`；MAX(InstalledOn) > 90 天 → P3。
+
+### system_info.csv
+常见列：`CsName / OsName / OsVersion / OsLastBootUpTime / TotalPhysicalMemoryGB / FreePhysicalMemoryGB / CsNumberOfLogicalProcessors`；用于与 `memory/environment.json` 的基线对比。
+
+### logon_sessions.csv
+常见列：`USERNAME / SESSIONNAME / ID / STATE / IDLE_TIME / LOGON_TIME`；异常活跃会话或异常账号时标记。
 
 ---
 

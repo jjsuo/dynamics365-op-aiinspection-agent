@@ -11,11 +11,31 @@
 
 ## 启动规则
 
-每次对话开始时必须：
+每次对话开始时必须按顺序加载以下上下文文件：
 
-1. 加载 memory/environment.json（环境基准）
-2. 加载 memory/data_catalog.json（可用数据索引）
-3. 若上述文件不存在，执行 BOOTSTRAP 流程
+### 必加载（核心上下文）
+
+1. `memory/environment.json` — 环境基准（服务器拓扑、AlwaysOn、D365 配置、known_risks）
+2. `memory/data_catalog.json` — 可用数据索引（category × 日期）
+3. `memory/sql_config.json` — SQL Server 实际运行配置（sp_configure、tempdb、RCSI、AlwaysOn 角色）
+4. `memory/thresholds.json` — 所有告警/健康度阈值（所有 skill 必须从此读取阈值，不得硬编码）
+5. `memory/business_context.json` — 业务峰值时段、SLA、维护窗口、批处理作业
+6. `memory/d365_custom.json` — Plugin 前缀、自定义索引规范、关键实体
+7. `memory/risk_profile.json` — 跨巡检周期的风险画像与 watch_list
+8. `memory/inspection_history.json` — 巡检历史记录
+
+### 缺失处理
+
+- 若 `environment.json` / `data_catalog.json` 不存在 → 执行 BOOTSTRAP 流程
+- 若 `sql_config.json` / `d365_custom.json` 不存在或字段为空 → 提示用户执行 `ServerCollectionScript/08_环境上下文采集.md` 里的 `Collect-SqlConfig.ps1` / `Suggest-D365Custom.ps1`
+- 若 `business_context.json` / `thresholds.json` 缺失 → 使用默认模板继续分析，但在输出末尾的"数据补充提示"中明确告知
+- 若 `risk_profile.json` / `inspection_history.json` 为空 → 视为首次巡检，不做趋势分析
+
+### 阈值与业务上下文使用原则
+
+- 健康度评分、P1/P2/P3 分级、告警命中判断 **必须**读取 `thresholds.json`
+- 时间点异常判断（如 CPU 尖峰）必须先匹配 `business_context.json` 的 `maintenance_windows` 和 `peak_hours`
+- 索引建议、Plugin 扫描结果过滤 **必须**参考 `d365_custom.json` 的 `never_drop_patterns` 与 `assembly_name_prefixes`
 
 ---
 
@@ -75,12 +95,16 @@ python3 tools/data_reader.py --list-categories
 | 慢SQL / 慢查询 / SQL性能报告 | slow_sql |
 | IIS健康 / 应用池 / 请求队列 / 响应时间 | iis_logs |
 | Windows健康 / 系统事件 / 服务状态 | windows_health |
+| Plugin扫描 / 插件代码检查 / 插件性能问题 | plugin_scan |
 
-### Plugin 代码扫描（非数据类别）
+### Plugin 代码扫描（两步流程）
 
 触发语义：Plugin扫描 / 插件代码检查 / 插件性能问题
-输入：用户上传的 `.cs` / `.dll` / `.zip` 文件或本地路径
-说明：Plugin 扫描分析源码而非采集数据，不经由 `data_reader.py`。
+数据通道：
+1. **元数据 CSV**：走 `data_reader.py --category plugin_scan`，读取 `plugin_assemblies / types / steps / images / collect_info.csv`
+2. **DLL 包**：同日目录下 `plugin_dlls.zip`，data_reader 返回 `kind=zip` + 清单 + `abs_path`；`plugin_scanner` Skill 解压后做静态扫描
+
+用户直接上传 `.cs` / `.dll` / `.zip` 时 Skill 可绕过 data_reader 直接处理。
 
 ---
 

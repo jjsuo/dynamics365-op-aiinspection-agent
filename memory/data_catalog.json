@@ -45,6 +45,15 @@
       "latest_date": "",
       "oldest_date": "",
       "total_days": 0
+    },
+    "plugin_scan": {
+      "relative_path": "plugin_scan",
+      "available_dates": [],
+      "latest_date": "",
+      "oldest_date": "",
+      "total_days": 0,
+      "has_dll_zip": false,
+      "_note": "采集每月一次或变更后触发；plugin_dlls.zip 由 plugin_scanner 解压扫描"
     }
   }
 }

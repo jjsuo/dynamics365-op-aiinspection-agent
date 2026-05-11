@@ -15,8 +15,11 @@ DATA_ROOT 解析顺序（优先级从高到低）：
 
 预置类别（category）：
     sql_blocking, slow_sql, sql_index, server_per_sql,
-    iis_logs, windows_health
+    iis_logs, windows_health, plugin_scan
     也支持 DATA_ROOT 下任意存在的子目录作为自定义 category。
+
+特殊文件类型：
+    - .zip: 仅列出压缩包内容清单（不解压），供 plugin_scanner 等 Skill 自行处理。
 
 用法：
     python3 tools/data_reader.py --category slow_sql --today
@@ -97,6 +100,7 @@ KNOWN_CATEGORIES = [
     "server_per_sql",
     "iis_logs",
     "windows_health",
+    "plugin_scan",
 ]
 
 
@@ -201,6 +205,26 @@ def _read_json(path: str, date_tag: str):
     return data
 
 
+def _read_zip_manifest(path: str):
+    """列出 ZIP 内条目清单，不解压。供 plugin_scanner 等 Skill 自行处理。"""
+    import zipfile
+    entries, err = [], None
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                entries.append({
+                    "name": info.filename,
+                    "size": info.file_size,
+                    "compressed_size": info.compress_size,
+                })
+    except Exception as e:
+        err = str(e)
+        print(f"[skip] {path}: {e}", file=sys.stderr)
+    return entries, err
+
+
 def _file_to_payload(abs_path: str, rel_path: str, date_tag: str):
     """统一封装文件内容到输出 payload。不对数据做分析。"""
     fname = os.path.basename(abs_path)
@@ -244,6 +268,23 @@ def _file_to_payload(abs_path: str, rel_path: str, date_tag: str):
             "kind": "json",
             "data": data,
         }
+
+    if low.endswith(".zip"):
+        entries, err = _read_zip_manifest(abs_path)
+        payload = {
+            "file": fname,
+            "date": date_tag,
+            "path": rel_path,
+            "kind": "zip",
+            "abs_path": abs_path,                      # Skill 需要实际路径做解压
+            "total_entries": len(entries),
+            "total_size": sum(e["size"] for e in entries),
+            "entries": entries,
+            "note": "archive listed but not extracted; Skill should extract if needed",
+        }
+        if err:
+            payload["error"] = err
+        return payload
 
     return None  # 其他类型暂不支持
 

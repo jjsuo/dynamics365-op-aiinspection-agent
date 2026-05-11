@@ -20,7 +20,9 @@ Dynamics 365 On-Premises 数据库存储与大表分析专家。
 ## 数据来源
 
 ### 模式 A：用户上传文件
-table_size.csv（包含 TableName / RowCount / TotalSizeMB / DataSizeMB / IndexSizeMB）
+`table_size.csv`（按采集脚本 04 产出，关键列：`DatabaseName / SchemaName / TableName / RowCount_ / ReservedKB / UsedKB / UsedMB / ReservedGB / CreateDate / ModifyDate / CollectDate`）
+
+如同时有 `index_usage.csv`，可用它聚合出索引空间（见 Step 5）。
 
 ### 模式 B：本地目录自动读取
 默认路径：`<DATA_ROOT>/sql_index/YYYY-MM-DD/table_size.csv`
@@ -33,7 +35,35 @@ python3 tools/data_reader.py --category sql_index --last-30
 python3 tools/data_reader.py --category sql_index --date 2026-04-29
 ```
 
-脚本会返回当日 `sql_index` 目录下的所有 CSV；本 Skill 只使用其中 `table_size*.csv` / `rowcount*.csv` 文件做存储分析。
+脚本会返回当日 `sql_index` 目录下的所有 CSV；本 Skill 主要使用 `table_size*.csv`，可选配合 `index_usage*.csv` 拆分数据/索引空间。
+
+---
+
+## CSV 字段映射（严格对齐采集脚本 04）
+
+### table_size.csv（必需）
+| 字段 | 含义 |
+|------|------|
+| DatabaseName | 数据库名，多库采集时按此分组 |
+| SchemaName | 架构名（通常为 dbo） |
+| TableName | 表名 |
+| RowCount_ | 行数（字段名带下划线，规避关键字） |
+| ReservedKB | 预留页面总大小（KB），含已用 + 未用 |
+| UsedKB | 已使用页面（KB） |
+| UsedMB | UsedKB / 1024，已使用空间（MB） |
+| ReservedGB | 预留空间（GB），整除结果（大表才不为 0） |
+| CreateDate | 表创建时间 |
+| ModifyDate | 结构最后变更时间 |
+| CollectDate | 采集日期 |
+
+> 注意：采集脚本未直接输出 `TotalSizeMB / DataSizeMB / IndexSizeMB`。本 Skill 使用 `UsedMB` 近似 `TotalSizeMB`；如需拆 Data vs Index，使用 `index_usage.csv` 聚合（见 Step 5）。
+
+### index_usage.csv（可选，拆空间用）
+关键列：`DatabaseName / SchemaName / TableName / IndexName / IndexType / IsPrimaryKey / UsedSizeKB`
+
+聚合规则：
+- `DataSpaceKB = SUM(UsedSizeKB WHERE IndexType = 'CLUSTERED' OR IsPrimaryKey = 1)`
+- `IndexSpaceKB = SUM(UsedSizeKB WHERE IndexType != 'CLUSTERED' AND IsPrimaryKey = 0)`
 
 ---
 
@@ -63,21 +93,23 @@ python3 tools/data_reader.py --category sql_index --date 2026-04-29
 - 可用空间
 
 ### Step 2：TOP 大表排名
-- 按 TotalSizeMB 降序排列 TOP 20
+- 按 `UsedMB` 降序排列 TOP 20（按 DatabaseName 分组）
 - 标注是否为 D365 系统表
-- 计算每张表的索引膨胀率（IndexSizeMB / DataSizeMB）
+- 若有 index_usage.csv，同时计算 `IndexSpaceKB / DataSpaceKB` 膨胀率
 
 ### Step 3：D365 膨胀表专项检查
-- 逐一检查预警阈值列表中的表
-- 对超阈值表输出：当前行数 / 大小 / 增长速率 / 风险等级 / 处理建议
+- 逐一检查预警阈值列表中的表（匹配 `TableName`，忽略 Schema）
+- 对超阈值表输出：当前 `RowCount_` / `UsedMB` / 增长速率 / 风险等级 / 处理建议
 
 ### Step 4：增长趋势分析（如有多天数据）
-- 对比最近 7/30 天数据
+- 对比最近 7/30 天数据的 `RowCount_` 和 `UsedMB`
 - 计算日均增长量
 - 预测达到危险阈值的时间（按当前增长率）
+- 留意 `ModifyDate` 最近变更的大表（可能刚批量导入）
 
 ### Step 5：索引膨胀分析
-- IndexSizeMB > DataSizeMB × 2 → 索引过多或冗余
+- 需要 `index_usage.csv` 配合
+- `IndexSpaceKB > DataSpaceKB × 2` → 索引过多或冗余
 - 结合 sql_index_optimizer skill 给出处理建议
 
 ---

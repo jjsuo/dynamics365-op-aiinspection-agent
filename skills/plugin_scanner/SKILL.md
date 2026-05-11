@@ -19,26 +19,68 @@ Dynamics 365 Plugin 代码质量与性能风险扫描专家。
 
 ## 数据来源
 
-### 模式 A：源码文件（推荐）
-用户上传：
-- *.cs 文件（单个 Plugin 源码）
-- *.zip 文件（Plugin 项目压缩包）
-- *.csproj 项目文件
+Plugin 扫描采用**两步流程**：先从元数据 CSV 看注册配置，再解压 DLL 做静态扫描。
 
-### 模式 B：注册配置分析
-用户提供 Plugin Registration Tool 的导出信息：
-- 步骤注册列表（消息、实体、执行阶段、模式）
-- 过滤属性配置
+### 模式 A：采集目录（推荐，服务器侧有定期采集）
 
-### 模式 C：自动扫描
-Plugin 扫描不使用 data_reader（数据来源是源码而非采集 CSV）。用户可提供本地路径或文件：
+目录约定：`<DATA_ROOT>/plugin_scan/YYYY-MM-DD/`
+
+通过统一读取工具拉元数据 + 包清单：
 ```bash
-# 示例：后续若需要可在 tools/ 下新增独立的扫描脚本
-# python3 tools/plugin_scanner.py --path /path/to/plugin/source
-# python3 tools/plugin_scanner.py --file MyPlugin.cs
-# python3 tools/plugin_scanner.py --zip plugins.zip
+python3 tools/data_reader.py --category plugin_scan --today
+python3 tools/data_reader.py --category plugin_scan --date 2026-05-01
+python3 tools/data_reader.py --category plugin_scan --list-dates
 ```
-或由 AI 直接读取用户上传的 .cs / .zip 文件进行规则匹配。
+
+返回结构：
+- `files[kind=csv]`：5 个元数据 CSV
+- `files[kind=zip]`：`plugin_dlls.zip` 文件清单（**未解压**），含 `abs_path` 字段；Skill 自行解压后扫描
+
+#### CSV 字段映射（对齐采集脚本 07）
+
+**plugin_assemblies.csv**（程序集）
+`PluginAssemblyId / AssemblyName / Culture / Version / PublicKeyToken / IsolationMode / SourceType / Path / ContentSizeBytes / CreatedOn / ModifiedOn / CreatedBy / ModifiedBy`
+- `IsolationMode`：1=None, 2=Sandbox, 3=External
+- `SourceType`：0=Database, 1=Disk, 2=Normal
+
+**plugin_types.csv**（插件类）
+`PluginTypeId / PluginAssemblyId / TypeName / FriendlyName / Name / Description / IsWorkflowActivity / WorkflowActivityGroupName / CreatedOn / ModifiedOn`
+
+**plugin_steps.csv**（注册步骤）
+`StepId / StepName / PluginTypeId / MessageName / PrimaryEntity / ExecMode / StageCode / Rank / SupportedDeployment / StateCode / FilteringAttributes / Configuration / AsyncAutoDelete / CreatedOn / ModifiedOn`
+- `ExecMode`：0=Sync, 1=Async
+- `StageCode`：10=PreValidation, 20=PreOperation, 40=PostOperation
+- `StateCode`：0=Enabled, 1=Disabled
+
+**plugin_images.csv**（Pre/Post 镜像）
+`ImageId / StepId / ImageName / EntityAlias / ImageType / MessagePropertyName / ImageAttributes / CreatedOn / ModifiedOn`
+- `ImageType`：0=Pre, 1=Post, 2=Both
+
+**plugin_collect_info.csv**（采集元信息）
+`CollectDate / Server / OrgDatabase / CrmBinDir / DumpedFromDB / ZipSizeMB`
+
+#### DLL 包解压
+
+Skill 获得 `plugin_dlls.zip` 的 `abs_path` 后，解压到临时目录：
+```python
+import tempfile, zipfile, os
+tmp = tempfile.mkdtemp(prefix="plugin_scan_")
+with zipfile.ZipFile(abs_path) as zf:
+    zf.extractall(tmp)
+# 对 tmp 下 *.dll 做反编译（ILSpy / dnSpy / Mono.Cecil）或字符串扫描
+```
+
+与 CSV 关联：DLL 文件名 ↔ `plugin_assemblies.AssemblyName` ↔ `plugin_types.TypeName` ↔ `plugin_steps`。
+
+### 模式 B：用户上传源码
+用户直接上传：
+- `*.cs` 源文件
+- `*.zip` 项目压缩包
+- `*.csproj` 项目文件
+无 CSV 元数据时，仅做静态代码扫描（模式 B 不能自动判断注册配置风险，需用户补充注册信息）。
+
+### 模式 C：Plugin Registration Tool 导出
+用户粘贴注册导出（步骤列表 / 过滤属性），补充模式 B。
 
 ---
 
@@ -169,15 +211,47 @@ var name = target.Contains("name") ? target["name"].ToString() : string.Empty;
 
 ---
 
+## 两步流程推荐步骤（采集目录场景）
+
+### Step 1：读元数据打画像
+调用 `data_reader.py --category plugin_scan --today`，得到 5 个 CSV + 1 个 ZIP 清单。
+
+### Step 2：注册配置静态分析（无需解压 DLL）
+基于 `plugin_steps.csv` 直接识别风险：
+- `FilteringAttributes` 为空 且 `MessageName='Update'` 且 `ExecMode=0`（同步）→ P1
+- `StageCode=20` 且 `ExecMode=0` 且 `MessageName IN ('Create','Update','Delete')` → P2 预警（需结合代码确认是否有写操作）
+- `AsyncAutoDelete=0` 且 `ExecMode=1`（异步） → P3（AsyncOperationBase 会膨胀）
+- `StateCode=1`（禁用）→ 标注并汇总（可能是死代码）
+- 同一 (MessageName, PrimaryEntity, StageCode, ExecMode) 下 `Rank` 重复 → 执行顺序不确定，P2
+- 交叉 `plugin_types.csv` 搜集同一 `PluginTypeId` 注册了过多步骤（>5）：标注为万能类
+- 交叉 `plugin_assemblies.csv`：`SourceType=0`（Database）且 `ContentSizeBytes > 5MB` → 重量级程序集
+
+这一步**不需要 DLL**，可迅速出注册配置层的问题清单。
+
+### Step 3：解压 DLL 做深度扫描
+从 `files[kind=zip]` 的 `abs_path` 解压 `plugin_dlls.zip` 到临时目录，对每个 `*.dll`：
+- 优先用 Mono.Cecil / ILSpy CLI / dnSpy CLI 反编译（如未安装，降级为 `strings` + 正则匹配）
+- 按上文的 P1/P2/P3 规则扫描类型、方法、IL 代码
+- 通过 `PluginTypeBase.TypeName` 定位 DLL 里的类 → `[namespace].[class]`，回写到对应步骤的风险条目
+
+### Step 4：生成报告
+注册层问题（Step 2）+ 代码层问题（Step 3）按 PluginType 汇总，输出统一报告。
+
+> 注意：如果 `ZipSizeMB` 在 `plugin_collect_info.csv` 中 > 50MB，解压前要提示用户确认（避免放爆磁盘）。
+
+---
+
 ## 输出结构
 
 ```
 ## Plugin 代码扫描报告
 
 ### 扫描概况
-扫描文件：XX 个 .cs 文件
-Plugin 类：XX 个
-步骤注册：XX 个步骤
+数据来源：采集目录（YYYY-MM-DD）/ 用户上传
+程序集：XX 个（plugin_assemblies.csv）
+Plugin 类：XX 个（plugin_types.csv）
+注册步骤：XX 个（plugin_steps.csv）
+DLL 深度扫描：XX 个类 / XX 个方法
 发现问题：P1×X / P2×X / P3×X
 
 ### 健康评分

@@ -1,0 +1,89 @@
+{
+  "_description": "所有告警/健康度阈值集中管理 - Skill 引用此处，不要散落到各自实现",
+  "_last_updated": "",
+  "_note": "按客户/环境调整；默认值面向中等规模 D365 On-Prem",
+  "sql_performance": {
+    "cpu_pct_warning": 70,
+    "cpu_pct_critical": 85,
+    "ple_seconds_warning": 300,
+    "ple_seconds_critical": 120,
+    "io_read_ms_warning": 15,
+    "io_read_ms_critical": 30,
+    "io_write_ms_warning": 15,
+    "io_write_ms_critical": 30,
+    "memory_grants_pending_warning": 1,
+    "worker_threads_used_pct_warning": 80,
+    "batch_requests_per_sec_high": 2000,
+    "sql_compilations_per_sec_high": 100
+  },
+  "slow_sql": {
+    "cpu_ms_threshold": 500,
+    "logical_reads_threshold": 50000,
+    "duration_ms_warning": 3000,
+    "duration_ms_critical": 10000,
+    "exec_count_per_5min_warning": 1000,
+    "top_n_report": 20
+  },
+  "sql_blocking": {
+    "block_duration_ms_warning": 5000,
+    "block_duration_ms_critical": 30000,
+    "block_chain_depth_warning": 3,
+    "block_chain_depth_critical": 5,
+    "block_frequency_per_hour_warning": 5,
+    "deadlock_per_day_warning": 3
+  },
+  "index": {
+    "fragmentation_pct_reorganize": 10,
+    "fragmentation_pct_rebuild": 30,
+    "unused_index_scan_count_max": 0,
+    "missing_index_impact_score_warning": 1000,
+    "duplicate_index_tolerance": 0
+  },
+  "table_size": {
+    "row_count_huge": 10000000,
+    "row_count_critical": 50000000,
+    "size_gb_huge": 50,
+    "size_gb_critical": 200,
+    "growth_rate_warning_pct_per_month": 15,
+    "growth_rate_critical_pct_per_month": 30
+  },
+  "iis": {
+    "response_ms_warning": 2000,
+    "response_ms_critical": 5000,
+    "status_5xx_rate_warning_pct": 1,
+    "status_5xx_rate_critical_pct": 5,
+    "status_4xx_rate_warning_pct": 5,
+    "app_pool_restart_per_day_warning": 3,
+    "worker_process_memory_gb_warning": 4,
+    "requests_per_sec_high": 200
+  },
+  "windows": {
+    "disk_usage_pct_warning": 80,
+    "disk_usage_pct_critical": 90,
+    "disk_free_gb_min": 10,
+    "memory_usage_pct_warning": 85,
+    "memory_usage_pct_critical": 95,
+    "event_error_per_hour_warning": 10,
+    "uptime_days_minimum": 1,
+    "uptime_days_maximum_suggest_reboot": 180
+  },
+  "plugin": {
+    "execution_ms_warning": 2000,
+    "execution_ms_critical": 5000,
+    "step_count_per_entity_warning": 20,
+    "sync_plugin_max_depth": 3
+  },
+  "scoring_weights": {
+    "_note": "健康度总分 = sum(各维度 × 权重 / 100)，权重加和应为 100",
+    "cpu_pressure": 20,
+    "io_latency": 20,
+    "sql_blocking": 20,
+    "table_bloat": 20,
+    "architecture_risk": 20
+  },
+  "severity_levels": {
+    "P1": "必须立即处理，影响核心业务",
+    "P2": "建议本周内优化，影响性能或稳定性",
+    "P3": "长期优化规划，改善架构或效率"
+  }
+}

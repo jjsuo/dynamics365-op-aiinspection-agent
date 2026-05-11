@@ -1,0 +1,46 @@
+{
+  "_description": "D365 定制化清单 - Plugin 前缀、自定义索引规范、关键实体",
+  "_last_updated": "",
+  "_partial_autofill": "Plugin 前缀可由 plugin_assemblies.csv 推断；索引规范由 index_existing.csv 推断；业务语义需人工",
+  "plugin": {
+    "assembly_name_prefixes": [],
+    "exclude_prefixes": ["Microsoft.", "System."],
+    "source_repo_url": "",
+    "source_local_path": "",
+    "known_performance_issues": [
+      {"assembly": "", "type": "", "issue": "", "severity": "", "note": ""}
+    ],
+    "review_conventions": {
+      "sandbox_required": true,
+      "async_preferred_for_non_critical": true,
+      "max_execution_ms_sync": 2000
+    }
+  },
+  "indexes": {
+    "custom_naming_pattern": "^IX_CUSTOM_",
+    "never_drop_patterns": ["^PK_", "^fndx_PrimaryKey", "^ndx_"],
+    "d365_system_index_prefixes": ["ndx_", "fndx_", "cndx_"],
+    "allow_drop_pattern": "^IX_CUSTOM_.*_OBSOLETE$"
+  },
+  "entities": {
+    "_note": "filled manually or semi-auto from plugin_types.csv",
+    "critical_custom_entities": [],
+    "archive_enabled_entities": [],
+    "audit_required_entities": [],
+    "async_heavy_entities": []
+  },
+  "batch_job_fingerprints": {
+    "_note": "已知的 batch SQL 指纹，分析时可标记为非告警",
+    "known_fingerprints": []
+  },
+  "conventions": {
+    "publisher_prefix": "",
+    "custom_attribute_prefix": "new_",
+    "custom_schema_prefix": ""
+  },
+  "databases": {
+    "organization_databases": ["MSCRM"],
+    "config_database": "MSCRM_CONFIG",
+    "archive_databases": []
+  }
+}

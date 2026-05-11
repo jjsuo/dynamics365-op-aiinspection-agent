@@ -1,0 +1,58 @@
+{
+  "_description": "业务上下文 - 峰值时段、SLA、维护窗口、批处理作业清单",
+  "_last_updated": "",
+  "_owner": "需由业务/运维填写，非自动采集",
+  "customer": {
+    "name": "",
+    "industry": "",
+    "timezone": "Asia/Shanghai",
+    "country": "CN"
+  },
+  "business_hours": {
+    "workdays": "Monday-Friday",
+    "saturday_is_workday": false,
+    "peak_hours": [
+      {"name": "上午业务高峰", "start": "09:00", "end": "11:30", "severity": "critical", "note": "CPU/QPS 最高时段"},
+      {"name": "下午业务高峰", "start": "13:30", "end": "17:00", "severity": "critical", "note": "创建/更新主流时段"}
+    ],
+    "off_peak_hours": [
+      {"name": "午休", "start": "12:00", "end": "13:00"},
+      {"name": "下班后", "start": "18:00", "end": "23:59"}
+    ],
+    "quiet_hours": [
+      {"name": "凌晨维护窗口", "start": "02:00", "end": "04:00", "note": "允许短时阻塞/IO 尖峰"}
+    ]
+  },
+  "sla": {
+    "iis_response_p95_ms": 2000,
+    "iis_response_p99_ms": 5000,
+    "system_availability_pct": 99.5,
+    "planned_downtime_per_month_hours": 4,
+    "business_degradation_threshold_pct": 30
+  },
+  "maintenance_windows": [
+    {"name": "每日备份", "schedule": "daily 01:00-02:30", "operations": ["full_backup", "log_backup"], "impact": "IO 升高"},
+    {"name": "索引重建", "schedule": "weekly Sunday 02:00-04:00", "operations": ["index_rebuild", "statistics_update"], "impact": "碎片度下降"},
+    {"name": "Windows 补丁", "schedule": "monthly 2nd Saturday 22:00-24:00", "operations": ["windows_update", "reboot"]},
+    {"name": "CRM 版本升级", "schedule": "on-demand", "operations": ["cu_patch"]}
+  ],
+  "batch_jobs": [
+    {"name": "AsyncOperation Bulk Delete", "schedule": "daily 00:30", "impact": "AsyncOperationBase 行数回落", "owner": "DBA"},
+    {"name": "审计数据归档", "schedule": "monthly", "impact": "AuditBase 行数回落", "owner": "合规"},
+    {"name": "月结报表", "schedule": "monthly 1st 23:00", "impact": "SQL CPU 升高 40%+", "owner": "财务"}
+  ],
+  "critical_urls": [
+    {"url": "/Main.aspx", "description": "主页/菜单", "p95_target_ms": 1500},
+    {"url": "/XRMServices/2011/Organization.svc", "description": "SOAP 端点", "p95_target_ms": 2000},
+    {"url": "/api/data/v9.x", "description": "Web API", "p95_target_ms": 2000}
+  ],
+  "known_quiet_periods": [
+    {"name": "春节", "start": "", "end": "", "note": "负载通常降到 20%"},
+    {"name": "国庆", "start": "", "end": "", "note": "负载通常降到 30%"}
+  ],
+  "user_concurrency": {
+    "total_users": 0,
+    "peak_concurrent_users": 0,
+    "typical_concurrent_users": 0
+  }
+}

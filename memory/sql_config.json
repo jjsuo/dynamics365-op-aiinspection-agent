@@ -1,0 +1,80 @@
+{
+  "_description": "SQL Server 实际运行配置快照 - 由 Collect-SqlConfig.ps1 自动采集",
+  "_last_updated": "",
+  "_collected_by": "ServerCollectionScript/08_环境上下文采集.md",
+  "instances": [
+    {
+      "server": "SQL01",
+      "instance": "MSSQLSERVER",
+      "product_version": "",
+      "product_level": "",
+      "edition": "",
+      "configurations": {
+        "max_server_memory_mb": 0,
+        "min_server_memory_mb": 0,
+        "max_degree_of_parallelism": 0,
+        "cost_threshold_for_parallelism": 0,
+        "optimize_for_ad_hoc_workloads": 0,
+        "max_worker_threads": 0,
+        "backup_compression_default": 0,
+        "fill_factor_pct": 0,
+        "remote_query_timeout": 0
+      },
+      "tempdb": {
+        "files": [
+          {"name": "tempdev", "size_mb": 0, "max_size_mb": 0, "growth_mb": 0, "physical_path": ""}
+        ],
+        "total_data_file_count": 0,
+        "total_data_size_mb": 0,
+        "log_size_mb": 0,
+        "on_dedicated_drive": false,
+        "all_files_equal_size": false
+      },
+      "databases": [
+        {
+          "name": "MSCRM",
+          "is_read_committed_snapshot_on": false,
+          "snapshot_isolation_state": "",
+          "recovery_model": "FULL",
+          "compatibility_level": 0,
+          "auto_shrink": false,
+          "auto_close": false,
+          "auto_create_statistics": true,
+          "auto_update_statistics": true,
+          "auto_update_statistics_async": false,
+          "page_verify": "",
+          "size_mb": 0,
+          "log_size_mb": 0,
+          "space_used_mb": 0,
+          "trustworthy": false,
+          "service_broker_enabled": false
+        }
+      ],
+      "trace_flags_global": [],
+      "alwayson": {
+        "enabled": false,
+        "role": "",
+        "availability_group": "",
+        "sync_mode": "",
+        "failover_mode": "",
+        "lag_sec": 0
+      },
+      "cpu": {
+        "logical_cores": 0,
+        "numa_nodes": 0,
+        "affinity_mask_auto": true
+      },
+      "memory": {
+        "total_physical_gb": 0,
+        "total_server_memory_mb": 0,
+        "target_server_memory_mb": 0,
+        "lock_pages_in_memory": false
+      },
+      "io_stall_sample": {
+        "_note": "最近 1 小时的累计 I/O stall 样本，用于判断磁盘压力",
+        "read_stall_ms_per_read": 0,
+        "write_stall_ms_per_write": 0
+      }
+    }
+  ]
+}

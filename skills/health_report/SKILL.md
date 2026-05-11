@@ -43,19 +43,63 @@ Dynamics 365 On-Premises 系统综合健康巡检报告聚合专家。
 | sql_perf_analyzer | server_per_sql | 标注"无性能数据" |
 | iis_analysis | iis_logs | 标注"无IIS数据" |
 | windows_health | windows_health | 标注"无Windows数据" |
+| plugin_scanner | plugin_scan | 标注"无Plugin数据" |
 
-### Step 3：跨模块关联分析
+### Step 3：★ 跨源时间桶关联分析（新采集格式的核心优势）
+
+**关键能力**：`perfmon_5min.BucketStart = slowsql_5min.BucketStart = blocking_HHmm.csv 的 HHmm`，三者能直接 JOIN。
+
+做法：
+1. 从 `perfmon_5min_*.csv` 中找出所有 **异常桶**（CPU P95>85% 或 Disk sec/Read>50ms 或 PLE<300s）
+2. 每个异常桶用 `BucketStart` 去 JOIN `slowsql_5min_*.csv` 和 `blocking_HHmm.csv`
+3. 输出「那 5 分钟时 CPU 为什么高」的确凿框图奖回答
+
+输出表示例：
+
+```
+[异常桶] 2026-05-08 14:25:00  CPU P95 = 92%
+  → 同桶 TOP 3 慢 SQL（按 TotalCpuMs）：
+     1. SqlFingerprint=ab12… ExecCount=1234 TotalCpuMs=450,000  AvgDurationMs=180
+     2. SqlFingerprint=cd34… ExecCount=567  TotalCpuMs=120,000  AvgDurationMs=210
+     3. …
+  → 同桶 blocking_1425.csv：Head Blocker SPID=58，阻塞深度=3
+  → 根因：SQL #1（ContactBase 全表扫描）合计 7.5 分钟 CPU，进而导致会话排队阻塞
+```
+
+### Step 4：其他跨模块关联分析
 识别跨层问题链路（见下文关联规则）。
 
-### Step 4：综合评分与排序
+### Step 5：综合评分与排序
 汇总各模块评分，生成总体健康度评分。
 
-### Step 5：更新记忆
+### Step 6：更新记忆
 将本次巡检结果写入 memory/environment.json 的 inspection_history。
 
 ---
 
 ## 跨模块关联规则
+
+### ★ 关联链路 0（最重要）：CPU/IO 尖峰 → TopSQL → 阻塞
+
+触发条件（有 `perfmon_5min_*.csv` 或 `slowsql_5min_*.csv` 时自动运行）：
+- PerfMon 某个 BucketStart 的 `% Processor Time` P95 > 85% 或 `Avg Disk sec/Read` > 50ms
+- 同 BucketStart 存在 slowsql_5min TotalCpuMs > 60,000 的条目
+
+输出格式：
+```
+[关联链路] 2026-05-08 14:25 CPU 尖峰 → Top SQL → 会话排队
+服务器：SQL01
+  PerfMon：\Processor\% Processor Time P95=92%，Disk sec/Read MAX=68ms
+    → 同 5 分钟桶 Top CPU SQL：
+       - ContactBase 全表扫描（SqlFingerprint=ab12...）
+         ExecCount=1234, TotalCpuMs=450000, AvgDurationMs=180
+       - …
+      → 同时段 blocking_1425.csv: Head Blocker SPID=58查 ContactBase
+        → 根因定位：ContactBase 缺少 OwnerId+StateCode 覆盖索引
+              → 导致 CPU 尖峰与会话排队同时发生
+```
+
+---
 
 ### 关联链路 1：IIS慢 → SQL阻塞 → IO瓶颈
 

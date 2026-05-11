@@ -45,25 +45,43 @@ Agent 接受以下结构化标签输入：
 │   ├── index_existing.csv           ← 静态文件（category 根目录，手动维护）
 │   └── YYYY-MM-DD/
 │       ├── index_usage.csv
-│       ├── fragmentation.csv
+│       ├── index_fragment.csv       ← 新文件名（代替老的 fragmentation.csv）
 │       ├── missing_index.csv
 │       └── table_size.csv
 ├── server_per_sql/
 │   └── YYYY-MM-DD/
-│       ├── perf_counter_*.csv / serverper.csv
-│       ├── server_per_sql_stats.csv
+│       ├── perfmon_5min_YYYY-MM-DD.csv   ← ★ 服务器端 5 分钟时间桶聚合
+│       ├── perfmon_daily_YYYY-MM-DD.csv  ← ★ 当日汇总
+│       ├── slowsql_5min_YYYY-MM-DD.csv   ← ★ 藏在 server_per_sql？slow_sql 下设计选一
 │       └── server_per_sql_baseline.json（可选）
+├── slow_sql/
+│   └── YYYY-MM-DD/
+│       ├── slowsql_5min_YYYY-MM-DD.csv   ← ★ (BucketStart, SqlFingerprint) 时间桶
+│       └── slowsql_daily_YYYY-MM-DD.csv  ← ★ 当日汇总
+├── sql_blocking/
+│   └── YYYY-MM-DD/
+│       └── blocking_HHmm.csv            ← ★ 23 列，每 5 分钟一个快照
 ├── iis_logs/
 │   └── YYYY-MM-DD/
-│       ├── iis_access_*.log
-│       ├── iis_summary.csv
-│       └── app_pool_events.csv
-└── windows_health/
+│       ├── u_exYYMMDD*.log              ← ★ IIS W3C 日志原始文件
+│       ├── apppool_status.csv           ← ★ 应用池状态快照
+│       └── iis_worker_processes.csv     ← ★ w3wp 进程资源
+├── windows_health/
+│   └── YYYY-MM-DD/
+│       ├── event_logs.csv               ← ★ System + Application 合并
+│       ├── services.csv                 ← ★ 服务状态快照
+│       ├── disks.csv                    ← ★ 磁盘空间
+│       ├── hotfixes.csv                 ← ★ 补丁历史
+│       ├── system_info.csv              ← ★ 系统基本信息
+│       └── logon_sessions.csv           ← ★ 登录会话
+└── plugin_scan/                         ← ★ 新增（每月 / 变更后采集）
     └── YYYY-MM-DD/
-        ├── event_log_system.csv
-        ├── event_log_application.csv
-        ├── service_status.csv
-        └── windows_perf_summary.csv
+        ├── plugin_assemblies.csv
+        ├── plugin_types.csv
+        ├── plugin_steps.csv
+        ├── plugin_images.csv
+        ├── plugin_collect_info.csv
+        └── plugin_dlls.zip              ← ★ data_reader 仅列内容，由 plugin_scanner 解压
 ```
 
 ### DATA_ROOT 解析顺序（优先级从高到低）
@@ -82,6 +100,7 @@ Agent 接受以下结构化标签输入：
 - `server_per_sql`
 - `iis_logs`
 - `windows_health`
+- `plugin_scan`（新增，包含 ZIP）
 
 任何新增 Skill 只需新增一个同名子目录即可自动生效，`data_reader.py` 无需改动。
 
@@ -96,7 +115,7 @@ Agent 接受以下结构化标签输入：
 ### 用户直接输入
 
 - SQL 查询结果粘贴 / PowerShell 输出 / 手工整理数据
-- Plugin `.cs` / `.dll` / `.zip` 文件（由 `plugin_scanner` Skill 处理，不经由 `data_reader`）
+- Plugin `.cs` / `.dll` / `.zip` 文件（两种通道：（1）用户直接上传；（2）采集脚本落盘到 `plugin_scan/YYYY-MM-DD/plugin_dlls.zip`，data_reader 仅返回清单，由 `plugin_scanner` Skill 自行解压处理）
 
 ---
 
@@ -145,10 +164,19 @@ DATA_ROOT=/mnt/d/insagent-data python3 tools/data_reader.py --category <name> --
       "file": "xxx.csv",
       "date": "YYYY-MM-DD",
       "path": "slow_sql/YYYY-MM-DD/xxx.csv",
-      "kind": "csv | w3c_log | json",
+      "kind": "csv | w3c_log | json | zip",
       "total_rows": 1234,
       "columns": ["..."],
       "data": [ {"col": "val", "_date": "YYYY-MM-DD", "_file": "xxx.csv"}, "..." ]
+    },
+    {
+      "file": "plugin_dlls.zip",
+      "kind": "zip",
+      "abs_path": "/abs/path/to/plugin_dlls.zip",
+      "total_entries": 12,
+      "total_size": 3456789,
+      "entries": [{"name": "Contoso.Plugins.dll", "size": 123456}],
+      "note": "archive listed but not extracted; Skill should extract if needed"
     }
   ],
   "static_files": [
@@ -169,6 +197,7 @@ DATA_ROOT=/mnt/d/insagent-data python3 tools/data_reader.py --category <name> --
 | 慢SQL / 慢查询 / SQL性能报告 | slow_sql |
 | IIS健康 / 应用池状态 / 请求超时 / IIS日志 / 响应时间 | iis_logs |
 | Windows健康 / 系统事件 / 服务状态 / 系统日志 | windows_health |
+| Plugin扫描 / 插件代码检查 / 插件性能问题 | plugin_scan |
 
 ### 文件名约定（Skill 内识别）
 
@@ -176,27 +205,46 @@ DATA_ROOT=/mnt/d/insagent-data python3 tools/data_reader.py --category <name> --
 
 | category | 文件名关键字 | 数据类型 |
 |----------|--------------|----------|
+| sql_blocking | `blocking_*` / `blocking_HHmm*` | 阻塞快照（23 列） |
+| slow_sql | `slowsql_5min*` | 5 分钟时间桶 × 指纹 |
+| slow_sql | `slowsql_daily*` | 当日汇总 |
 | sql_index | `index_usage*` | 索引使用率 |
-| sql_index | `fragment*` / `physical*` | 碎片率 |
-| sql_index | `missing*` | 缺失索引 |
+| sql_index | `index_fragment*` / `fragment*` / `physical*` | 碎片率（新文件名） |
+| sql_index | `missing_index*` / `missing*` | 缺失索引 |
 | sql_index | `table_size*` / `rowcount*` | 表大小 |
 | sql_index | `index_existing*`（静态） | 现有索引清单 |
-| server_per_sql | `perf*` / `perf_counter_*` / `serverper*` | PerfMon 计数器 |
+| server_per_sql | `perfmon_5min*` | PerfMon 5 分钟聚合（新格式） |
+| server_per_sql | `perfmon_daily*` | PerfMon 当日汇总 |
+| server_per_sql | `perf*` / `serverper*` | PerfMon 老格式（兼容） |
 | server_per_sql | `*stats*` / `*wait*` | 等待统计 |
 | server_per_sql | `*baseline*.json` | 性能基线 |
-| iis_logs | `*.log` / `iis_access*` | 访问日志（W3C） |
-| iis_logs | `iis_summary*` | 汇总 |
-| iis_logs | `app_pool*` | 应用池事件 |
-| windows_health | `event_log_system*` | 系统事件 |
-| windows_health | `event_log_application*` | 应用事件 |
-| windows_health | `service_status*` | 服务状态 |
-| windows_health | `windows_perf*` / `perf_summary*` | 资源摘要 |
+| iis_logs | `*.log` / `u_ex*` / `iis_access*` | 访问日志（W3C） |
+| iis_logs | `apppool_status*` | 应用池状态快照 |
+| iis_logs | `iis_worker_processes*` | w3wp 进程资源 |
+| iis_logs | `iis_summary*` / `app_pool*`（老格式） | 汇总 / 应用池事件 |
+| windows_health | `event_logs*` | 事件日志（System+Application） |
+| windows_health | `services*` | 服务状态 |
+| windows_health | `disks*` | 磁盘空间 |
+| windows_health | `hotfixes*` | 补丁历史 |
+| windows_health | `system_info*` | 系统信息 |
+| windows_health | `logon_sessions*` | 登录会话 |
+| plugin_scan | `plugin_assemblies*` | 程序集元数据 |
+| plugin_scan | `plugin_types*` | 插件类 |
+| plugin_scan | `plugin_steps*` | 注册步骤 |
+| plugin_scan | `plugin_images*` | Pre/Post 镜像 |
+| plugin_scan | `plugin_collect_info*` | 采集元信息 |
+| plugin_scan | `plugin_dlls.zip` | DLL 包（仅列表） |
 
 ---
 
-## 四、Plugin 扫描（独立）
+## 四、Plugin 扫描（两步流程）
 
-Plugin 扫描分析源码而非采集 CSV，不经由 `data_reader.py`。由 `plugin_scanner` Skill 直接对用户上传的 `.cs` / `.zip` 文件或本地源码路径进行规则匹配。
+Plugin 扫描分两条通道：
+
+1. **元数据 CSV 通道**：通过 `data_reader.py --category plugin_scan --today` 读取 `plugin_assemblies / plugin_types / plugin_steps / plugin_images` 等 CSV，分析注册配置合理性（同步/异步、Stage、FilteringAttributes）。
+2. **DLL 静态扫描通道**：同当日目录下的 `plugin_dlls.zip`，data_reader 仅返回压缩包内文件清单（`kind=zip`），包含 `abs_path` 字段；`plugin_scanner` Skill 自行解压后进行反编译 / 规则匹配。
+
+用户也可直接上传 `.cs` / `.dll` / `.zip`，此时不必经由 `data_reader`，Skill 直接处理文件路径。
 
 ---
 
