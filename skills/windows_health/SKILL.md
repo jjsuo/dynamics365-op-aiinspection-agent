@@ -77,6 +77,43 @@ python3 tools/data_reader.py --category windows_health --list-dates
 
 ---
 
+## ★ 跨源关联数据（强制加载）
+
+事件日志的价值在于「与同期 SQL / IIS / Plugin 异常对应起来」，单独看很容易被常规告警淹没。
+
+### 必加载清单
+
+| 文件 | 用途 |
+|------|------|
+| memory/environment.json | 服务器拓扑 + 磁盘配置（判断事件影响面） |
+| memory/thresholds.json | `thresholds.windows`（disk_free_gb_warn/crit 按驱动器细分，可用内存/CPU 阈值） |
+| memory/d365_custom.json | D365 关键服务清单定制（若有非标服务名匹配） |
+| memory/business_context.json | `maintenance_windows` 识别被动重启 / 补丁重启是否在预期窗口内；`batch_jobs` 识别同期中的批量作业 |
+| memory/risk_profile.json | 历史反复出现的服务的服务自动升级 |
+
+### 跨源数据（发现异常后必加载）
+
+| Windows 观察 | 回查源 | 目的 |
+|-------------|--------|------|
+| EventID 41/1001（非正常重启/蓝屏） | 同时间 perfmon_5min + slowsql + blocking | 是否因负载尖峰崩溃 |
+| EventID 1000/1026（应用/．NET 崩溃） | 同时间 iis_logs（5xx）+ plugin_scan | 是否因 Plugin 报错所致 |
+| EventID 7034（服务意外终止） | 同时间 apppool_status / iis_worker_processes | IIS/Async 心跳是否同步丢失 |
+| Disk EventID 51/11（磁盘 IO 错） | 同时间 perfmon_5min Disk sec/Read | 是否持续 IO 婚迷 |
+| SChannel 36888 | iis_logs 401/403 + ADFS 日志 | ADFS/Kerberos 故障确认 |
+| 磁盘 free < 阈值 | 最近的备份 / 日志文件产生者 | 如 SQL Log / TempDB 没收缩行为 |
+| 补丁 InstalledOn | `business_context.maintenance_windows` | 补丁重启是否在维护窗口内 → 是 → 降级为预期行为 |
+
+### 执行示例
+
+```bash
+DATE=2026-05-08
+for cat in windows_health server_per_sql iis_logs slow_sql sql_blocking; do
+  python3 tools/data_reader.py --category $cat --date $DATE
+done
+```
+
+---
+
 ## 新格式 CSV 关键字段（优先）
 
 ### event_logs.csv
@@ -205,6 +242,29 @@ python3 tools/data_reader.py --category windows_health --list-dates
 ### Step 4：跨服务器关联
 - 结合 environment.json 拓扑，检查各服务器是否同步出现问题
 - 例如：ADFS 错误 → 影响所有 APP 服务器认证
+
+### Step 5：★ 同期跨源关联（强制）
+
+每一个 P1/P2 事件必须给出同期证据链：
+
+```
+[P1] APP01 EventID 1026（2026-05-08 14:32，.NET 运行时错误）× 3 次
+
+⏰ 时间判定：14:32 落在 peak_hours → 业务高峰期故障
+🔍 同期证据（BucketStart=2026-05-08 14:30:00）：
+  ┌─ IIS：iis_logs 14:30-14:35 出现 500 错误 42 条，集中在 /api/data/v9.1/accounts
+  ├─ Plugin（plugin_scan）：AccountPlugin_Pre.dll 低产于的可疑候选（开启同步注册）
+  ├─ SQL：perfmon_5min %Processor Time 未有尖峰，SlowSQL 无特殊
+  └─ 服务：MSCRMSandboxService 未停，但进程内异常
+
+🎯 根因结论：Plugin 代码异常导致，非基础设施问题
+🛠 联动建议：交付给 plugin_scanner 对 AccountPlugin_Pre 做深度扫描
+```
+
+多服务器拓扑检查：
+- ADFS 错误 → 影响所有 APP 服务器认证
+- SQL01 蓝屏 → 确认 AlwaysOn 是否正常故障转移到 SQL02（结合 sql_config.alwayson）
+- 补丁重启 → 检查 `business_context.maintenance_windows`，在窗口内 → 预期；非窗口内 → 未授权重启告警
 
 ---
 

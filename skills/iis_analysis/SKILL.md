@@ -57,6 +57,45 @@ python3 tools/data_reader.py --category iis_logs --list-dates
 
 ---
 
+## ★ 跨源关联数据（强制加载）
+
+IIS 层的慢/错/端很少是自我问题：**80% 故障根源在 SQL 层或业务高峰**。本 Skill 必须关联 SQL / PerfMon / business_context 才能给出有效结论。
+
+### 必加载清单
+
+| 文件 | 用途 |
+|------|------|
+| memory/environment.json | APP01/APP02 物理配置 + 拓扑（单 APP 还是 NLB） |
+| memory/thresholds.json | `thresholds.iis`（req_per_sec / p95_ms / error_5xx_pct / app_pool_memory_mb） |
+| memory/business_context.json | `peak_hours` 判断请求风暴是否预期；`sla.iis_response_p95_ms` 判 SLA；`critical_urls` 优先监控；`user_concurrency` 判断发隔正常 |
+| memory/risk_profile.json | 历史 历史常崩的应用池升级等级 |
+
+### 跨源数据（识别问题后必加载）
+
+任一触发→必须按 `BucketStart`/小时桶对齐：
+
+| IIS 观察 | 回查源 | 命令 |
+|---------|--------|------|
+| 504 / time-taken > SLA | slowsql_5min + blocking | `data_reader.py --category slow_sql/sql_blocking --date X`，对齐 BucketStart |
+| 500 集中爆 | 同期 perfmon_5min 的 CPU/PLE/Memory Grants Pending + windows_health event_logs EventID 1000/1026 | 确认是应用池崩溃还是 SQL 压垮回流 |
+| 503 端 | apppool_status.State + iis_worker_processes.WorkingSet_MB + perfmon `Requests Queued` | 确认队列满 / 进程挂 / 回收中 |
+| 401/403 激增 | windows_health event_logs Security + ADFS `36888` SChannel | ADFS/Kerberos 问题 |
+| 应用池内存高 | 同期 plugin_scan 中 Plugin 步骤与应用池的关联 | D365 Plugin 火算或泄漏嫌疑 |
+
+### 执行脚本示例
+
+```bash
+# 同时拉回同天所有跨源数据
+DATE=2026-05-08
+for cat in iis_logs server_per_sql slow_sql sql_blocking windows_health; do
+  python3 tools/data_reader.py --category $cat --date $DATE
+done
+```
+
+> 时间桶对齐规则：W3C 日志的 `time` 按 `FLOOR(minute/5)*5` 归桶 → 与 `perfmon_5min.BucketStart` / `slowsql_5min.BucketStart` / `blocking_HHmm` JOIN。
+
+---
+
 ## 分析维度与阈值
 
 ### 1. 请求吞吐量
@@ -133,12 +172,35 @@ python3 tools/data_reader.py --category iis_logs --list-dates
 - 重点分析 500/503/504
 - 关联是否与 SQL 阻塞时段重叠
 
-### Step 5：跨层关联
-- IIS 响应慢高峰时段 ↔ SQL 阻塞高峰时段
-- IIS 503 错误 ↔ 应用池内存耗尽时段
-- IIS 504 超时 ↔ SQL 慢查询时段
-- ★ W3C 日志的 `time` 字段可以按 5 分钟聚合，和 `perfmon_5min_*.csv` / `slowsql_5min_*.csv` 的 `BucketStart` 对齐：
-  - 例：将 W3C 日志按 `FLOOR(time_in_minutes / 5) * 5` 归桶，即可与 SQL 侧数据 JOIN。
+### Step 5：跨层关联（强制）
+
+IIS 层每一个问题都必须有可观测的同期证据，本步骤不是可选。
+
+- IIS 响应慢高峰时段 ↔ SQL 阻塞高峰时段（BucketStart JOIN）
+- IIS 503 错误 ↔ 应用池内存耗尽时段（iis_worker_processes.WorkingSet_MB）
+- IIS 504 超时 ↔ SQL 慢查询时段（slowsql_5min）
+- ★ W3C 日志的 `time` 字段按 5 分钟聚合，和 `perfmon_5min_*.csv` / `slowsql_5min_*.csv` 的 `BucketStart` 对齐：将 W3C 日志按 `FLOOR(time_in_minutes / 5) * 5` 归桶，即可与 SQL 侧数据 JOIN。
+
+### Step 5.1：★ 每类 IIS 异常必须输出的跨源证据例
+
+```
+[P1] /api/data/v9.1/accounts PATCH P95=8.4s（超 SLA 2s） 高峰时段 14:25-14:40
+
+⏰ 时间判定：命中 peak_hours（工作日 14:00-17:00） → 真业务高峰
+🔍 同期证据（BucketStart=2026-05-08 14:25:00）：
+  ┌─ SQL 层：
+  │   · perfmon_5min：%Processor Time P95=92% / PLE=180s（超阈）
+  │   · slowsql_5min：TOP SQL UPDATE AccountBase 执行 1840 次 / 总 CPU 920秒
+  │   · blocking_1425：3 条阻塞链最长 18s，涉及 AccountBase
+  ├─ 应用池：
+  │   · CRMAppPool WorkingSet 2.8GB（近阈值 3GB），未崩
+  └─ Windows 层：event_logs 无 EventID 1000/1026
+
+🎯 根因结论：请求慢是 SQL 层 AccountBase 阻塞导致，非 IIS / 应用池问题
+🛠 联动建议：交给 sql_block_analysis / sql_index_optimizer 处理 AccountBase
+```
+
+若找不到同期 SQL 证据 → 转向检查 Plugin 是否有同期注册或重中度升级；仍找不到 → 标注「根因不明，建议下次高峰开启 Failed Request Tracing」。
 
 ---
 

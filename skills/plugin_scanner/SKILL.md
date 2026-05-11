@@ -84,6 +84,51 @@ with zipfile.ZipFile(abs_path) as zf:
 
 ---
 
+## ★ 跨源关联数据（强制加载）
+
+Plugin 性能问题的隐蔽性最强——**不关联运行时数据根本无法判断哪些步骤真的被触发**。注册配置里有个 P1 步骤运行时没人调，优先级就应该降；反过来一个 P3 规范问题步骤日调用 10 万次，优先级就要升。
+
+### 必加载清单
+
+| 文件 | 用途 |
+|------|------|
+| memory/d365_custom.json | `plugin.assembly_name_prefixes` 识别自定义 vs OOB Plugin；第三方包白名单 |
+| memory/thresholds.json | `thresholds.plugin`（sync_execution_ms / async_backlog / trace_log_mb）替代下文硬编码阈值 |
+| memory/business_context.json | `peak_hours` 判断 Plugin 执行时段是否落在业务高峰；`sla.iis_response_p95_ms` 假速度判断 |
+| memory/risk_profile.json | 历史高风险 Plugin 名单→命中自动升级 |
+
+### 运行时反向验证（注册风险打分后必做）
+
+| 注册配置风险 | 跨源证据 | 判定规则 |
+|----------------|----------|----------|
+| 同步 Plugin 步骤在高频实体 | slowsql_5min 中 CRM 服务账户的执行指纹 | Plugin 步骤对应 SQL 频率 > `thresholds.plugin.sync_qps_warn` → 升 P1 |
+| 异步 Plugin AsyncAutoDelete=0 | table_size 中 AsyncOperationBase 大小 | 步骤与 AsyncOperation 膨胀负相关 → 升 P1 |
+| 同步 Plugin + Post-Operation + 无过滤 | iis_logs 5xx / windows_health EventID 1000/1026 | 同期有崩溃或慢请求 → 升级 + 追溯是元凶 |
+| Plugin 代码包含 原生 SQL | sql_blocking head blocker SQL 正文 | SQL 文本特征正好到 Plugin 里 → 确凿 包含来源 |
+| Plugin 步骤 StateCode=1（禁用） | - | 死代码打标，建议清理（P3） |
+| 文件名不匹配白名单前缀 | d365_custom.plugin.assembly_name_prefixes | 未入白名单→记为 未知第三方 / OOB，重中度标注 |
+
+### 回查脚本示例
+
+```bash
+# Plugin 步骤与慢 SQL 反向关联
+python3 tools/data_reader.py --category slow_sql --last-7
+  → 提取未 SQL 文本指纹，和 Plugin 内 SqlCommand / RetrieveMultiple 调用点模糊匹配
+
+python3 tools/data_reader.py --category sql_index --today
+  → table_size.csv 中 AsyncOperationBase 大小 → 与异步 Plugin AsyncAutoDelete=0 的步骤数对照
+
+python3 tools/data_reader.py --category iis_logs --date <崩溃日期>
+  → 5xx 请求路径 → 和 Plugin 注册的 PrimaryEntity 映射
+```
+
+> 输出中每一条 Plugin 风险条目必须标注「运行时证据强度」：
+> - `[RUNTIME-CONFIRMED]` = 有同期 SQL/IIS/Async 反向证据
+> - `[STATIC-ONLY]` = 仅静态规则命中，无运行时证据（降级）
+> - `[DEAD-CODE]` = StateCode=1，属死代码
+
+---
+
 ## 反模式检测规则
 
 ### P1 级别（严重性能风险）
@@ -236,6 +281,53 @@ var name = target.Contains("name") ? target["name"].ToString() : string.Empty;
 
 ### Step 4：生成报告
 注册层问题（Step 2）+ 代码层问题（Step 3）按 PluginType 汇总，输出统一报告。
+
+### Step 5：★ 运行时反向验证（强制）
+
+对 Step 2 + Step 3 所有风险条目，做运行时证据补充，改写优先级：
+
+```bash
+# 1. 慢 SQL 是否命中特定 Plugin 实体
+python3 tools/data_reader.py --category slow_sql --last-7
+  → 按 UserName / HostName 筛 CRM 服务账户的 SQL
+  → 聚合按 PrimaryEntity，与 Plugin 步骤的 PrimaryEntity 对照
+
+# 2. 异步作业膨胀关联
+python3 tools/data_reader.py --category sql_index --today
+  → table_size.csv 中 AsyncOperationBase，若 > 阈值，匹配所有 ExecMode=1 的步骤
+  → 按 PluginType 排索 → Top 异步 Plugin 便是膨胀源头
+
+# 3. 崩溃关联
+python3 tools/data_reader.py --category windows_health --last-7
+  → event_logs MSCRMSandboxService 崩溃 / EventID 1026 中的堆栈
+  → 匹配到崩溃的 程序集 AssemblyName
+```
+
+优先级调整规则：
+
+| 静态风险 | 运行时证据 | 调整后优先级 |
+|---------|-----------|--------------|
+| P3 代码规范 | 日执行 > 10万次 + SQL 指纹命中 | ↑ P2 |
+| P2 无过滤属性 | 同期 iis_logs 5xx + EventID 1026 | ↑ P1 |
+| P1 同步 RetrieveMultiple | 运行时慢 SQL 证据 = 0 | ↓ P2（更详细规范修复的同时开启观察期） |
+| P1 全部 | StateCode=1 | ↓ P3 DEAD-CODE（建议删除步骤） |
+
+输出案例：
+
+```
+[P1][RUNTIME-CONFIRMED] AccountPlugin_Pre.dll :: Contoso.CRM.Plugins.AccountPreUpdate
+  🔍 静态规则：#5 无过滤属性 + #6 Exception 封装不规范
+  📊 运行时证据：
+      - IIS 14:30 - 14:35 /api/data/v9.1/accounts 500 × 42 条
+      - windows_health APP01 EventID 1026 × 3（.NET 崩溃，堆栈命中 AccountPreUpdate）
+  🛠 建议：立即限制 FilteringAttributes = “statecode,statuscode,totalamount”，并修复异常封装
+
+[P3][STATIC-ONLY] SomePluginFromOOB.dll :: Microsoft.Crm.Plugins.*
+  📌 匹配 d365_custom.plugin.assembly_name_prefixes 的 OOB 前缀→不发变更
+  📌 无运行时证据，保留观察、不进优先级列表
+```
+
+> 运行时证据未命中不等于安全，但给「导向性」打分以免瞢前修改成本满盘飞。
 
 > 注意：如果 `ZipSizeMB` 在 `plugin_collect_info.csv` 中 > 50MB，解压前要提示用户确认（避免放爆磁盘）。
 
