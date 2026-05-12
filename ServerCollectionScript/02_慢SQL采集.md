@@ -286,20 +286,34 @@ BEGIN
 
     SET @rows = @@ROWCOUNT;
 
-    -- 6) 字典表增量合并（只看本批次，不扫全表）
-    ;WITH newFingerprints AS (
-        SELECT DISTINCT
+    -- 6) 字典表增量合并（批内先按 Fingerprint 去重，再对目标表 UPSERT）
+    --    修复：原先 SELECT DISTINCT 作用在整行，两条前 500 字符相同、尾部不同的 SqlText
+    --    会产出相同 Fingerprint 的多行，触发主键冲突。
+    --    这里用 ROW_NUMBER 保证每个 Fingerprint 本批次只留一行，
+    --    再用 MERGE + HOLDLOCK 防止与并发 Ingest 之间的竞态插入。
+    ;WITH normalized AS (
+        SELECT
                CONVERT(CHAR(64), HASHBYTES('SHA2_256', LEFT(LTRIM(SqlText), 500)), 2) AS SqlFingerprint,
                SqlText,
-               LEFT(SqlText, 800) AS SqlTextShort
+               LEFT(SqlText, 800) AS SqlTextShort,
+               ROW_NUMBER() OVER (
+                   PARTITION BY CONVERT(CHAR(64), HASHBYTES('SHA2_256', LEFT(LTRIM(SqlText), 500)), 2)
+                   ORDER BY LEN(SqlText) DESC     -- 同指纹保留最长 SqlText 样本
+               ) AS rn
         FROM   #parsed
         WHERE  SqlText IS NOT NULL
+    ),
+    newFingerprints AS (
+        SELECT SqlFingerprint, SqlText, SqlTextShort
+        FROM   normalized
+        WHERE  rn = 1
     )
-    INSERT INTO dbo.CaptureSlowSql_TextDictionary (SqlFingerprint, SqlTextFull, SqlTextShort)
-    SELECT n.SqlFingerprint, n.SqlText, n.SqlTextShort
-    FROM   newFingerprints n
-    WHERE  NOT EXISTS (SELECT 1 FROM dbo.CaptureSlowSql_TextDictionary d
-                       WHERE d.SqlFingerprint = n.SqlFingerprint);
+    MERGE dbo.CaptureSlowSql_TextDictionary WITH (HOLDLOCK) AS tgt
+    USING newFingerprints AS src
+       ON tgt.SqlFingerprint = src.SqlFingerprint
+    WHEN NOT MATCHED BY TARGET THEN
+        INSERT (SqlFingerprint, SqlTextFull, SqlTextShort)
+        VALUES (src.SqlFingerprint, src.SqlText, src.SqlTextShort);
 
     -- 7) 更新偏移量（取本次批次中最大 FileName + FileOffset）
     DECLARE @newFile NVARCHAR(260), @newOffset BIGINT;
