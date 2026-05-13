@@ -89,6 +89,8 @@ USE [db_monitor]
 GO
 
 -- 1) 原始日志（指纹持久化，保留 7 天）
+-- 注意：EventTime 存储 **本地时间**；XEvent 的 @timestamp 原术是 UTC，
+--       在 usp_CaptureSlowSql_IngestFromXEL 里做了 UTC→本地 的时区偏移。
 IF OBJECT_ID('dbo.CaptureSlowSql_RawLog','U') IS NULL
 CREATE TABLE dbo.CaptureSlowSql_RawLog(
     Id                BIGINT IDENTITY(1,1) PRIMARY KEY,
@@ -104,8 +106,8 @@ CREATE TABLE dbo.CaptureSlowSql_RawLog(
     PhysicalReads     BIGINT,
     Writes            BIGINT,
     RowCount_         BIGINT,
-    EventTimeUtc      DATETIME2          NOT NULL,
-    CollectDate       AS CAST(EventTimeUtc AS DATE) PERSISTED,
+    EventTime         DATETIME2          NOT NULL,   -- 本地时间
+    CollectDate       AS CAST(EventTime AS DATE) PERSISTED,
     INDEX IX_CaptureSlowSql_RawLog_Date NONCLUSTERED (CollectDate, SqlFingerprint)
 );
 GO
@@ -169,7 +171,7 @@ CREATE TABLE dbo.CaptureSlowSql_TextDictionary(
     SqlFingerprint CHAR(64)      PRIMARY KEY,
     SqlTextFull    NVARCHAR(MAX) NOT NULL,
     SqlTextShort   NVARCHAR(800) NOT NULL,
-    FirstSeenUtc   DATETIME2     DEFAULT SYSUTCDATETIME()
+    FirstSeenAt    DATETIME2     DEFAULT SYSDATETIME()   -- 本地时间
 );
 GO
 
@@ -178,12 +180,12 @@ IF OBJECT_ID('dbo.CaptureSlowSql_BucketWatermark','U') IS NULL
 BEGIN
     CREATE TABLE dbo.CaptureSlowSql_BucketWatermark(
         Id                  INT IDENTITY(1,1) PRIMARY KEY,
-        LastProcessedBucket DATETIME2 NOT NULL,     -- 最近已完成聚合的桶起点（UTC）
-        UpdatedUtc          DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+        LastProcessedBucket DATETIME2 NOT NULL,     -- 最近已完成聚合的桶起点（本地时间）
+        UpdatedAt           DATETIME2 NOT NULL DEFAULT SYSDATETIME()
     );
     -- 初始化：从 24 小时前开始补数
     INSERT INTO dbo.CaptureSlowSql_BucketWatermark(LastProcessedBucket)
-    VALUES (DATEADD(MINUTE, (DATEDIFF(MINUTE, 0, DATEADD(HOUR,-24,SYSUTCDATETIME())) / 5) * 5, CAST(0 AS DATETIME2)));
+    VALUES (DATEADD(MINUTE, (DATEDIFF(MINUTE, 0, DATEADD(HOUR,-24,SYSDATETIME())) / 5) * 5, CAST(0 AS DATETIME2)));
 END
 GO
 
@@ -197,8 +199,8 @@ CREATE TABLE dbo.CaptureSlowSql_XelOffset(
     FileOffset BIGINT        NOT NULL,
     RowsIngested INT          NULL,         -- 本次摆入行数，供监控
     DurationMs   INT          NULL,         -- 本次 Ingest 耗时
-    UpdatedUtc DATETIME2     NOT NULL DEFAULT SYSUTCDATETIME(),
-    INDEX IX_CaptureSlowSql_XelOffset_Updated NONCLUSTERED (UpdatedUtc DESC)
+    UpdatedAt  DATETIME2     NOT NULL DEFAULT SYSDATETIME(),   -- 本地时间
+    INDEX IX_CaptureSlowSql_XelOffset_Updated NONCLUSTERED (UpdatedAt DESC)
 );
 GO
 ```
@@ -217,8 +219,12 @@ CREATE OR ALTER PROCEDURE dbo.usp_CaptureSlowSql_IngestFromXEL
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @start  DATETIME2 = SYSUTCDATETIME();
+    DECLARE @start  DATETIME2 = SYSDATETIME();
     DECLARE @rows   INT       = 0;
+
+    -- ★ 服务器本地时区相对 UTC 的分钟偏移（比如中国 +480，美东 +-300、+-240）
+    -- XEvent 的 @timestamp 以 UTC 写入，这里用偏移量转换为本地时间再落库
+    DECLARE @tzOffsetMin INT = DATEDIFF(MINUTE, SYSUTCDATETIME(), SYSDATETIME());
 
     -- 1) 读最近一条偏移量（如果有）
     DECLARE @lastFile   NVARCHAR(260);
@@ -234,8 +240,8 @@ BEGIN
     --      为避免首次全扫，这里组合 highwater 再过滤一次
     DECLARE @highwater DATETIME2 =
         ISNULL(
-            (SELECT MAX(EventTimeUtc) FROM dbo.CaptureSlowSql_RawLog WITH (NOLOCK)),
-            DATEADD(HOUR, -@FallbackHours, SYSUTCDATETIME())
+            (SELECT MAX(EventTime) FROM dbo.CaptureSlowSql_RawLog WITH (NOLOCK)),
+            DATEADD(HOUR, -@FallbackHours, SYSDATETIME())
         );
 
     -- 3) 物化 XML 到 #xe（TOP 批次限流）
@@ -252,14 +258,15 @@ BEGIN
         -- 将本次“无新事件”记录到偏移量表，供运维观察
         INSERT INTO dbo.CaptureSlowSql_XelOffset(FileName, FileOffset, RowsIngested, DurationMs)
         VALUES (ISNULL(@lastFile, N'(none)'), ISNULL(@lastOffset, 0), 0,
-                DATEDIFF(MILLISECOND, @start, SYSUTCDATETIME()));
+                DATEDIFF(MILLISECOND, @start, SYSDATETIME()));
         RETURN;
     END
 
-    -- 4) 分步 shred XML 到 #parsed
+    -- 4) 分步 shred XML 到 #parsed（EventTime 已转为本地时间）
     IF OBJECT_ID('tempdb..#parsed') IS NOT NULL DROP TABLE #parsed;
     SELECT
-        xe.value('(event/@timestamp)[1]','datetime2')                               AS EventTimeUtc,
+        DATEADD(MINUTE, @tzOffsetMin,
+            xe.value('(event/@timestamp)[1]','datetime2'))                          AS EventTime,
         LEFT(xe.value('(event/action[@name="sql_text"]/value)[1]','nvarchar(max)'), 4000) AS SqlText,
         xe.value('(event/action[@name="nt_username"]/value)[1]','nvarchar(256)')    AS ExecuteAccount,
         xe.value('(event/action[@name="client_hostname"]/value)[1]','nvarchar(256)') AS ClientHostname,
@@ -276,12 +283,12 @@ BEGIN
     -- 5) 批量写入 RawLog（TABLOCK 少日志）
     INSERT INTO dbo.CaptureSlowSql_RawLog WITH (TABLOCK)
         (SqlText, ExecuteAccount, ClientHostname, DatabaseName,
-         CpuMs, DurationMs, LogicalReads, PhysicalReads, Writes, RowCount_, EventTimeUtc)
+         CpuMs, DurationMs, LogicalReads, PhysicalReads, Writes, RowCount_, EventTime)
     SELECT SqlText, ExecuteAccount, ClientHostname, DatabaseName,
-           CpuMs, DurationMs, LogicalReads, PhysicalReads, Writes, RowCount_, EventTimeUtc
+           CpuMs, DurationMs, LogicalReads, PhysicalReads, Writes, RowCount_, EventTime
     FROM   #parsed
     WHERE  SqlText IS NOT NULL
-      AND  EventTimeUtc > @highwater
+      AND  EventTime > @highwater
     OPTION (MAXDOP 2);
 
     SET @rows = @@ROWCOUNT;
@@ -323,11 +330,11 @@ BEGIN
 
     INSERT INTO dbo.CaptureSlowSql_XelOffset(FileName, FileOffset, RowsIngested, DurationMs)
     VALUES (@newFile, @newOffset, @rows,
-            DATEDIFF(MILLISECOND, @start, SYSUTCDATETIME()));
+            DATEDIFF(MILLISECOND, @start, SYSDATETIME()));
 
     -- 8) 清理旧偏移记录（保留 7 天用于排查）
     DELETE FROM dbo.CaptureSlowSql_XelOffset
-    WHERE  UpdatedUtc < DATEADD(DAY, -7, SYSUTCDATETIME());
+    WHERE  UpdatedAt < DATEADD(DAY, -7, SYSDATETIME());
 END
 GO
 ```
@@ -346,7 +353,7 @@ GO
 
 ```sql
 -- 看最近 24 小时 Ingest 耗时/行数
-SELECT TOP 50 UpdatedUtc, RowsIngested, DurationMs, FileName, FileOffset
+SELECT TOP 50 UpdatedAt, RowsIngested, DurationMs, FileName, FileOffset
 FROM   dbo.CaptureSlowSql_XelOffset
 ORDER BY Id DESC;
 
@@ -363,8 +370,8 @@ ORDER BY Id DESC;
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_CaptureSlowSql_BuildBucket
-    @OverrideFromUtc DATETIME2 = NULL,   -- 可选：强制从某个桶开始重跑（手动补数用）
-    @OverrideToUtc   DATETIME2 = NULL    -- 可选：强制处理到某个桶结束
+    @OverrideFrom DATETIME2 = NULL,   -- 可选：强制从某个桶开始重跑（手动补数用，本地时间）
+    @OverrideTo   DATETIME2 = NULL    -- 可选：强制处理到某个桶结束（本地时间）
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -372,18 +379,18 @@ BEGIN
     -- 1) 计算本次处理区间 [from, to)
     DECLARE @from DATETIME2, @to DATETIME2;
 
-    IF @OverrideFromUtc IS NOT NULL
-        SET @from = @OverrideFromUtc;
+    IF @OverrideFrom IS NOT NULL
+        SET @from = @OverrideFrom;
     ELSE
         SELECT @from = DATEADD(MINUTE, 5, MAX(LastProcessedBucket))   -- 从水位的下一个桶开始
         FROM dbo.CaptureSlowSql_BucketWatermark;
 
-    -- 上界：当前时间对齐到 5min 桶起点（这一桶还没满，不处理）
+    -- 上界：当前时间（本地）对齐到 5min 桶起点（这一桶还没满，不处理）
     DECLARE @nowBucket DATETIME2 =
-        DATEADD(MINUTE, (DATEDIFF(MINUTE, 0, SYSUTCDATETIME()) / 5) * 5, CAST(0 AS DATETIME2));
+        DATEADD(MINUTE, (DATEDIFF(MINUTE, 0, SYSDATETIME()) / 5) * 5, CAST(0 AS DATETIME2));
 
-    IF @OverrideToUtc IS NOT NULL
-        SET @to = @OverrideToUtc;
+    IF @OverrideTo IS NOT NULL
+        SET @to = @OverrideTo;
     ELSE
         SET @to = @nowBucket;   -- 不包含当前未完成桶
 
@@ -396,11 +403,11 @@ BEGIN
     -- 2) 批量按 5 分钟桶聚合（FLOOR 到 5min 对齐）
     ;WITH tagged AS (
         SELECT
-            DATEADD(MINUTE, (DATEDIFF(MINUTE, 0, EventTimeUtc) / 5) * 5, CAST(0 AS DATETIME2)) AS BucketStart,
+            DATEADD(MINUTE, (DATEDIFF(MINUTE, 0, EventTime) / 5) * 5, CAST(0 AS DATETIME2)) AS BucketStart,
             SqlFingerprint, SqlTextShort, DatabaseName, ClientHostname,
             CpuMs, DurationMs, LogicalReads
         FROM dbo.CaptureSlowSql_RawLog
-        WHERE EventTimeUtc >= @from AND EventTimeUtc < @to
+        WHERE EventTime >= @from AND EventTime < @to
     ),
     bucket AS (
         SELECT
@@ -440,11 +447,11 @@ BEGIN
                 src.MaxCpuMs, src.MaxDurationMs, src.MaxLogicalReads, src.DistinctHosts);
 
     -- 3) 推进水位（仅自动模式推进；手工 override 不更新水位，避免把正常水位冲掉）
-    IF @OverrideFromUtc IS NULL AND @OverrideToUtc IS NULL
+    IF @OverrideFrom IS NULL AND @OverrideTo IS NULL
     BEGIN
         UPDATE dbo.CaptureSlowSql_BucketWatermark
         SET LastProcessedBucket = DATEADD(MINUTE, -5, @to),   -- @to 本身未处理，水位停在 @to 的前一桶
-            UpdatedUtc = SYSUTCDATETIME();
+            UpdatedAt = SYSDATETIME();
     END
 END
 GO
@@ -474,7 +481,7 @@ BEGIN
         SUM(DurationMs),    AVG(DurationMs),  MAX(DurationMs),
         SUM(LogicalReads),  AVG(LogicalReads),MAX(LogicalReads),
         SUM(PhysicalReads), SUM(Writes),
-        MAX(ExecuteAccount),MAX(ClientHostname), MAX(EventTimeUtc)
+        MAX(ExecuteAccount),MAX(ClientHostname), MAX(EventTime)
     FROM dbo.CaptureSlowSql_RawLog
     WHERE CollectDate = @d
     GROUP BY SqlFingerprint;
@@ -552,10 +559,10 @@ Write-Host "DONE -> $OutputDir"
 ### 手动补数示例
 
 ```sql
--- 场景：发现 2026-05-08 14:00~15:00 区间桶数据缺失，手动重跑
+-- 场景：发现 2026-05-08 14:00~15:00 区间桶数据缺失，手动重跑（本地时间）
 EXEC dbo.usp_CaptureSlowSql_BuildBucket
-    @OverrideFromUtc = '2026-05-08 14:00:00',
-    @OverrideToUtc   = '2026-05-08 15:00:00';
+    @OverrideFrom = '2026-05-08 14:00:00',
+    @OverrideTo   = '2026-05-08 15:00:00';
 -- 注意：@Override 模式不会推进水位，用于纯补数
 
 -- 强制从头重置偏移（谨慎，仅 DBA 授权后使用）
@@ -589,20 +596,20 @@ ORDER  BY b.TotalCpuMs DESC;
 ```sql
 -- 最近 24 小时的 Ingest 流水
 SELECT TOP 50
-       UpdatedUtc,
+       UpdatedAt,
        RowsIngested,
        DurationMs AS IngestMs,
        CAST(DurationMs / 1000.0 AS DECIMAL(10,2)) AS IngestSec,
        FileName,
        FileOffset
 FROM   dbo.CaptureSlowSql_XelOffset
-WHERE  UpdatedUtc >= DATEADD(HOUR, -24, SYSUTCDATETIME())
+WHERE  UpdatedAt >= DATEADD(HOUR, -24, SYSDATETIME())
 ORDER  BY Id DESC;
 
 -- 告警规则示例：Ingest 持续 > 60 秒 要给告警
 SELECT AVG(DurationMs) AS AvgMs, MAX(DurationMs) AS MaxMs, COUNT(*) AS Runs
 FROM   dbo.CaptureSlowSql_XelOffset
-WHERE  UpdatedUtc >= DATEADD(HOUR, -6, SYSUTCDATETIME());
+WHERE  UpdatedAt >= DATEADD(HOUR, -6, SYSDATETIME());
 -- 若 MaxMs > 60000 或 AvgMs > 30000 → 东西变慢，排查是否 @BatchLimit 太低或 .xel 文件异常大
 ```
 
@@ -645,7 +652,60 @@ IF OBJECT_ID('dbo.SQL_Text_Dictionary','U') IS NOT NULL EXEC sp_rename 'dbo.SQL_
 IF OBJECT_ID('dbo.SlowBucket_Watermark','U')IS NOT NULL EXEC sp_rename 'dbo.SlowBucket_Watermark','CaptureSlowSql_BucketWatermark';
 GO
 
--- 3) 删除旧存储过程（本文第三/四/五步会重建新版）
+-- 3) 字段重命名：去掉 Utc 后缀，统一到本地时间命名（指针性判断，可重复跑）
+IF COL_LENGTH('dbo.CaptureSlowSql_RawLog','EventTimeUtc') IS NOT NULL
+    EXEC sp_rename 'dbo.CaptureSlowSql_RawLog.EventTimeUtc', 'EventTime', 'COLUMN';
+IF COL_LENGTH('dbo.CaptureSlowSql_TextDictionary','FirstSeenUtc') IS NOT NULL
+    EXEC sp_rename 'dbo.CaptureSlowSql_TextDictionary.FirstSeenUtc', 'FirstSeenAt', 'COLUMN';
+IF COL_LENGTH('dbo.CaptureSlowSql_BucketWatermark','UpdatedUtc') IS NOT NULL
+    EXEC sp_rename 'dbo.CaptureSlowSql_BucketWatermark.UpdatedUtc', 'UpdatedAt', 'COLUMN';
+IF COL_LENGTH('dbo.CaptureSlowSql_XelOffset','UpdatedUtc') IS NOT NULL
+    EXEC sp_rename 'dbo.CaptureSlowSql_XelOffset.UpdatedUtc', 'UpdatedAt', 'COLUMN';
+GO
+
+-- 4) ★ 历史数据 UTC → 本地时区迁移（关键）
+-- ❗ 只能跑一次！跑多次会多次偏移。
+-- ❗ 建议先对业务库做快照/备份，再执行本节。
+-- 已在线的旧本结构里 EventTime/LastProcessedBucket/FirstSeenAt/UpdatedAt 均为 UTC，
+-- 迁移后全部为本地时间。
+-- 迁移完成后同一服务器上再跑新版存储过程，新数据直接以本地时间落库。
+DECLARE @tzOffsetMin INT = DATEDIFF(MINUTE, SYSUTCDATETIME(), SYSDATETIME());
+PRINT CONCAT('[INFO] 本地时区偏移量（分钟）= ', @tzOffsetMin);
+
+-- 4.1) RawLog.EventTime
+UPDATE dbo.CaptureSlowSql_RawLog
+SET    EventTime = DATEADD(MINUTE, @tzOffsetMin, EventTime);
+
+-- 4.2) BucketWatermark.LastProcessedBucket
+UPDATE dbo.CaptureSlowSql_BucketWatermark
+SET    LastProcessedBucket = DATEADD(MINUTE, @tzOffsetMin, LastProcessedBucket),
+       UpdatedAt           = SYSDATETIME();
+
+-- 4.3) TimeBucket.BucketStart、DailySummary.LastExecTime 也是 UTC，同样偏移
+IF OBJECT_ID('dbo.CaptureSlowSql_TimeBucket','U') IS NOT NULL
+    UPDATE dbo.CaptureSlowSql_TimeBucket
+    SET    BucketStart = DATEADD(MINUTE, @tzOffsetMin, BucketStart);
+
+IF OBJECT_ID('dbo.CaptureSlowSql_DailySummary','U') IS NOT NULL
+    UPDATE dbo.CaptureSlowSql_DailySummary
+    SET    LastExecTime = DATEADD(MINUTE, @tzOffsetMin, LastExecTime)
+    WHERE  LastExecTime IS NOT NULL;
+
+-- 4.4) TextDictionary.FirstSeenAt
+UPDATE dbo.CaptureSlowSql_TextDictionary
+SET    FirstSeenAt = DATEADD(MINUTE, @tzOffsetMin, FirstSeenAt)
+WHERE  FirstSeenAt IS NOT NULL;
+
+-- 4.5) XelOffset 的 UpdatedAt——历史运维记录，不动也行；这里一并拉齐
+UPDATE dbo.CaptureSlowSql_XelOffset
+SET    UpdatedAt = DATEADD(MINUTE, @tzOffsetMin, UpdatedAt);
+GO
+
+-- 若是全新部署，并无历史数据需要保留，也可完全跳过步骤 3/4，
+-- 改为 TRUNCATE 所有表后重新跑 usp_CaptureSlowSql_IngestFromXEL，成本最低。
+GO
+
+-- 5) 删除旧存储过程（本文第三/四/五步会重建新版）
 IF OBJECT_ID('dbo.usp_SlowSQL_IngestFromXEL','P')   IS NOT NULL DROP PROCEDURE dbo.usp_SlowSQL_IngestFromXEL;
 IF OBJECT_ID('dbo.usp_SlowSQL_BuildBucket_5min','P') IS NOT NULL DROP PROCEDURE dbo.usp_SlowSQL_BuildBucket_5min;
 IF OBJECT_ID('dbo.usp_SlowSQL_DailySummary','P')    IS NOT NULL DROP PROCEDURE dbo.usp_SlowSQL_DailySummary;

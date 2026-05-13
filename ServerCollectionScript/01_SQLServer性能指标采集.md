@@ -190,7 +190,9 @@ BEGIN
     SET NOCOUNT ON;
 
     -- 仅处理上一完整 5 分钟桶，避免重复
-    DECLARE @now DATETIME2 = SYSUTCDATETIME();
+    -- 注意：采集侧 PerfMonCollector.ps1 的 CollectTime 写入的是本地时间（Get-Date）
+    --       所以这里的桶边界必须用 SYSDATETIME()（本地），不能用 SYSUTCDATETIME()
+    DECLARE @now DATETIME2 = SYSDATETIME();
     DECLARE @bucketStart DATETIME2 =
         DATEADD(MINUTE, (DATEDIFF(MINUTE, 0, @now) / 5) * 5, CAST(0 AS DATETIME2));
     SET @bucketStart = DATEADD(MINUTE, -5, @bucketStart);
@@ -242,9 +244,9 @@ BEGIN
     WHERE CAST(CollectTime AS DATE) = CAST(DATEADD(DAY, -1, GETDATE()) AS DATE)
     GROUP BY ServerName, CounterPath, CAST(CollectTime AS DATE);
 
-    -- 清理 7 天前的原始点
+    -- 清理 7 天前的原始点（CollectTime 是本地时间，用 SYSDATETIME）
     DELETE FROM dbo.PerfMon_Raw
-    WHERE CollectTime < DATEADD(DAY, -7, SYSUTCDATETIME());
+    WHERE CollectTime < DATEADD(DAY, -7, SYSDATETIME());
 END
 GO
 ```
